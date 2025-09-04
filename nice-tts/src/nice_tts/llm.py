@@ -4,31 +4,8 @@ from pathlib import Path
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
-import tiktoken
-import ssl
+from transformers import AutoTokenizer
 import typer
-
-import urllib.request
-
-def _disable_ssl_verify():
-    """
-    Disables SSL verification via monkey-patching urllib.request.
-    This is a workaround for issues in some corporate environments with proxies.
-    """
-    try:
-        context = ssl._create_unverified_context()
-        https_handler = urllib.request.HTTPSHandler(context=context)
-        opener = urllib.request.build_opener(https_handler)
-        urllib.request.install_opener(opener)
-        typer.secho(
-            "Warning: SSL verification has been disabled. This is not recommended.",
-            fg=typer.colors.YELLOW,
-        )
-    except Exception as e:
-        typer.secho(
-            f"Failed to disable SSL verification: {e}",
-            fg=typer.colors.RED,
-        )
 
 def load_llm_config():
     """
@@ -58,15 +35,27 @@ def load_llm_config():
         )
     return config
 
+# Global cache for tokenizer
+_tokenizer = None
+_tokenizer_model = None
+
 def _count_tokens(text: str, model: str) -> int:
     """
-    Counts the number of tokens in a text string using tiktoken.
+    Counts the number of tokens in a text string using Hugging Face transformers.
+    Caches the tokenizer for efficiency.
     """
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        encoding = tiktoken.get_encoding("cl100k_base")
-    return len(encoding.encode(text))
+    global _tokenizer, _tokenizer_model
+    if _tokenizer is None or _tokenizer_model != model:
+        try:
+            _tokenizer = AutoTokenizer.from_pretrained(model)
+            _tokenizer_model = model
+        except Exception as e:
+            typer.secho(f"Could not load tokenizer for model '{model}'. Falling back to 'gpt-2'. Error: {e}", fg=typer.colors.YELLOW)
+            # Fallback to a common tokenizer if the specified one fails
+            _tokenizer = AutoTokenizer.from_pretrained("gpt2")
+            _tokenizer_model = "gpt2"
+
+    return len(_tokenizer.encode(text))
 
 def _split_text_into_chunks(text: str, max_tokens: int, model: str) -> list[str]:
     """
@@ -108,13 +97,10 @@ def _split_text_into_chunks(text: str, max_tokens: int, model: str) -> list[str]
 
     return chunks
 
-def refine_transcript(txt_path: str, output_fine_path: str, no_ssl_verify: bool = False) -> str:
+def refine_transcript(txt_path: str, output_fine_path: str) -> str:
     """
     Refines a transcript from a TXT file using an LLM and saves it to a specified path.
     """
-    if no_ssl_verify:
-        _disable_ssl_verify()
-
     p_txt_path = Path(txt_path)
     if not p_txt_path.is_file():
         raise FileNotFoundError(f"TXT file not found at: {txt_path}")
@@ -168,14 +154,11 @@ def refine_transcript(txt_path: str, output_fine_path: str, no_ssl_verify: bool 
     return output_fine_path
 
 def summarize_transcript(
-    refined_text_path: str, original_audio_path: str, output_md_path: str, no_ssl_verify: bool = False
+    refined_text_path: str, original_audio_path: str, output_md_path: str
 ) -> str:
     """
     Generates a Chinese meeting summary and saves it to a specified path.
     """
-    if no_ssl_verify:
-        _disable_ssl_verify()
-
     p_refined_text_path = Path(refined_text_path)
     p_original_audio_path = Path(original_audio_path)
     if not p_refined_text_path.is_file():
