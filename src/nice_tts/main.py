@@ -25,11 +25,27 @@ def process(
         resolve_path=True,
     ),
     whisper_model: str = typer.Option(
-        "base",
+        "large-v3",
         "--model",
         "-m",
-        help="The Whisper model to use for transcription (e.g., tiny, base, small, medium, large)."
-    )
+        help="The Whisper model to use for transcription.",
+    ),
+    language: str = typer.Option(
+        "zh",
+        "--language",
+        "-l",
+        help="The language of the audio for transcription (e.g., 'en', 'zh').",
+    ),
+    output_dir: Path = typer.Option(
+        "out",
+        "--output-dir",
+        "-o",
+        help="The directory to save output files.",
+        file_okay=False,
+        dir_okay=True,
+        writable=True,
+        resolve_path=True,
+    ),
 ):
     """
     Process an audio file through the full pipeline: Transcribe -> Refine -> Summarize.

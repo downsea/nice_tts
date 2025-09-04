@@ -2,13 +2,17 @@ import whisper
 import os
 from pathlib import Path
 
-def transcribe_audio(audio_path: str, model_name: str = "base") -> str:
+def transcribe_audio(
+    audio_path: str, output_srt_path: str, model_name: str = "base", language: str = "en"
+) -> str:
     """
-    Transcribes an audio file using Whisper and saves the result as an SRT file.
+    Transcribes an audio file and saves the result to a specified SRT file path.
 
     Args:
-        audio_path (str): The path to the audio file.
-        model_name (str): The name of the Whisper model to use (e.g., "tiny", "base", "small", "medium", "large").
+        audio_path (str): The path to the input audio file.
+        output_srt_path (str): The full path where the output .srt file will be saved.
+        model_name (str): The name of the Whisper model to use.
+        language (str): The language of the audio. Use 'zh' for Chinese, 'en' for English.
 
     Returns:
         str: The path to the generated SRT file.
@@ -19,71 +23,67 @@ def transcribe_audio(audio_path: str, model_name: str = "base") -> str:
     print(f"Loading Whisper model '{model_name}'...")
     model = whisper.load_model(model_name)
 
-    print(f"Transcribing {audio_path}...")
-    # Using verbose=False to prevent whisper from printing its own progress,
-    # as we might want to have our own CLI progress indicators later.
-    result = model.transcribe(audio_path, verbose=False)
+    print(f"Transcribing {audio_path} (Language: {language})...")
+    result = model.transcribe(audio_path, language=language, verbose=False)
 
-    output_dir = Path(audio_path).parent
-    audio_basename = Path(audio_path).name
-    file_name_without_ext = Path(audio_path).stem
+    # Manually generate SRT content for full control over the output path.
+    srt_content = ""
+    for i, segment in enumerate(result['segments']):
+        start_time = segment['start']
+        end_time = segment['end']
+        text = segment['text']
 
-    # Get the SRT writer from whisper
-    writer = whisper.utils.get_writer("srt", str(output_dir))
+        start_h, rem = divmod(start_time, 3600)
+        start_m, rem = divmod(rem, 60)
+        start_s, start_ms = divmod(rem, 1)
 
-    # The writer creates a file named `audio_basename.srt`.
-    # For example, for "example.wav", it creates "example.wav.srt".
-    writer(result, audio_path)
+        end_h, rem = divmod(end_time, 3600)
+        end_m, rem = divmod(rem, 60)
+        end_s, end_ms = divmod(rem, 1)
 
-    # We want the file to be named "example.srt", so we rename it.
-    generated_srt_path = output_dir / f"{audio_basename}.srt"
-    desired_srt_path = output_dir / f"{file_name_without_ext}.srt"
+        srt_content += f"{i + 1}\n"
+        srt_content += f"{int(start_h):02}:{int(start_m):02}:{int(start_s):02},{int(start_ms*1000):03} --> {int(end_h):02}:{int(end_m):02}:{int(end_s):02},{int(end_ms*1000):03}\n"
+        srt_content += f"{text.strip()}\n\n"
 
-    os.rename(generated_srt_path, desired_srt_path)
+    with open(output_srt_path, 'w', encoding='utf-8') as f:
+        f.write(srt_content)
 
-    print(f"Transcription saved to {desired_srt_path}")
+    print(f"Transcription saved to {output_srt_path}")
 
-    return str(desired_srt_path)
+    return output_srt_path
 
 if __name__ == '__main__':
-    # This is an example of how to use the function.
-    # To run this, you need to have an audio file named "example.wav" in the same directory.
-    # For example, you can create a dummy wav file.
-    # This block is for testing purposes and will not be executed when the module is imported.
-
-    # Create a dummy wav file for testing if it doesn't exist.
+    # This block is for testing purposes.
     from scipy.io.wavfile import write
     import numpy as np
 
-    dummy_audio_path = "example.wav"
-    if not Path(dummy_audio_path).is_file():
-        print("Creating a dummy audio file 'example.wav' for testing.")
-        # Sample rate
+    test_dir = Path("test_transcription_output")
+    test_dir.mkdir(exist_ok=True)
+    dummy_audio = test_dir / "example_test.wav"
+    dummy_srt = test_dir / "example_test.srt"
+
+    if not Path(dummy_audio).is_file():
+        print(f"Creating a dummy audio file '{dummy_audio}' for testing.")
         samplerate = 44100
-        # Duration in seconds
-        duration = 5
-        # Frequency of the sine wave
+        duration = 3
         frequency = 440.0
-        # Generate a sine wave
         t = np.linspace(0., duration, int(samplerate * duration), endpoint=False)
         amplitude = np.iinfo(np.int16).max * 0.5
         data = amplitude * np.sin(2. * np.pi * frequency * t)
-        # Write to a WAV file
-        write(dummy_audio_path, samplerate, data.astype(np.int16))
-        print(f"'{dummy_audio_path}' created.")
+        write(dummy_audio, samplerate, data.astype(np.int16))
 
     try:
-        # Transcribe the dummy audio file
-        srt_file_path = transcribe_audio(dummy_audio_path, model_name="tiny")
-        print(f"Successfully transcribed '{dummy_audio_path}' to '{srt_file_path}'")
-
-        # Print the content of the SRT file
-        with open(srt_file_path, 'r', encoding='utf-8') as f:
+        print("--- Testing Transcription (English) ---")
+        transcribe_audio(
+            audio_path=str(dummy_audio),
+            output_srt_path=str(dummy_srt),
+            model_name="tiny",
+            language="en"
+        )
+        with open(dummy_srt, 'r', encoding='utf-8') as f:
             print("\n--- SRT File Content ---")
             print(f.read())
             print("------------------------")
-
     except Exception as e:
         print(f"An error occurred: {e}")
-        print("Please ensure you have ffmpeg installed and accessible in your system's PATH.")
-        print("You can install it using: sudo apt-get install ffmpeg (on Debian/Ubuntu)")
+        print("Please ensure `ffmpeg` and `scipy` are installed.")

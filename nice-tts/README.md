@@ -1,20 +1,23 @@
 # Nice-TTS: AI-Powered Transcription and Summarization
 
-Nice-TTS is a powerful command-line tool that leverages AI to transcribe audio recordings, refine the transcriptions, and generate detailed meeting summaries. It's designed to be a simple yet effective utility for anyone who needs to process voice recordings into well-structured text and summaries.
+Nice-TTS is a powerful, batch-capable command-line tool that leverages AI to transcribe audio recordings, refine the transcriptions, and generate detailed meeting summaries. It's designed for efficient processing of single audio files or entire directories of recordings.
 
 ## Features
 
--   **AI-Powered Transcription**: Uses OpenAI's Whisper models to transcribe audio files (WAV, MP3, etc.) into text with high accuracy.
--   **LLM-Based Refinement**: Connects to any OpenAI-compatible Large Language Model (LLM) to clean up the raw transcript. It corrects punctuation, removes filler words, and improves readability.
--   **Intelligent Summarization**: Generates a comprehensive meeting summary in Markdown format, including an overview, discussion points, action items, and decisions made.
--   **Metadata Inference**: Smartly infers meeting details like date and topic from the filename and transcript content.
--   **Simple CLI**: Provides a user-friendly command-line interface for easy operation.
+-   **AI-Powered Transcription**: Uses OpenAI's Whisper models to transcribe audio files.
+-   **Batch Processing**: Process a single audio file or all supported audio files in a directory.
+-   **Configurable Language**: Supports transcription for various languages (defaults to Chinese, `zh`).
+-   **LLM-Based Refinement**: Connects to any OpenAI-compatible LLM to clean up the raw transcript.
+-   **Intelligent Summarization**: Generates a comprehensive meeting summary in Markdown format.
+-   **Smart Processing**: Automatically skips completed steps if an output file is already present, saving time and resources. Can be overridden with a `--force` flag.
+-   **Flexible Configuration**: Reads credentials from a local `.env` file or a global `~/.env` file.
+-   **Organized Output**: Saves all generated files into a specified output directory.
 
 ## Requirements
 
 -   Python 3.11 or higher.
 -   `uv` for environment and package management (recommended).
--   `ffmpeg`: Whisper requires `ffmpeg` to be installed on your system to process audio files. You can install it via your system's package manager (e.g., `sudo apt-get install ffmpeg` on Debian/Ubuntu, `brew install ffmpeg` on macOS).
+-   `ffmpeg`: Whisper requires `ffmpeg` to be installed on your system.
 -   Access to an OpenAI-compatible LLM API with an API key.
 
 ## Installation
@@ -25,19 +28,18 @@ Nice-TTS is a powerful command-line tool that leverages AI to transcribe audio r
     cd nice-tts
     ```
 
-2.  **Create a virtual environment and install dependencies using `uv`:**
+2.  **Create a virtual environment and install dependencies:**
     ```bash
     uv venv
     source .venv/bin/activate
     uv pip install -e .
     ```
-    *Note: The PyTorch dependencies for GPU support will be installed automatically based on the `pyproject.toml` configuration. For a specific CUDA version, you might need to adjust the installation command.*
 
 ## Configuration
 
-Before you can use the refinement and summarization features, you need to provide your LLM API credentials.
+The tool needs API credentials to connect to an LLM. It will look for a `.env` file first in the current directory, and if not found, it will check your home directory for a `~/.env` file.
 
-1.  **Create a `.env` file** by copying the example file:
+1.  **Create a `.env` file** in your project directory or your home directory. You can copy the example file:
     ```bash
     cp .env.example .env
     ```
@@ -46,63 +48,61 @@ Before you can use the refinement and summarization features, you need to provid
 
     ```dotenv
     # .env - OpenAI-compatible LLM configuration
-    # Your OpenAI API key or a key from a compatible service.
     OPENAI_API_KEY="your_api_key_here"
-
-    # The base URL of the API. For OpenAI, this is https://api.openai.com/v1.
-    # For other services (like local LLMs), change this to the correct endpoint.
     OPENAI_API_BASE="https://api.openai.com/v1"
-
-    # The model to use for refinement and summarization.
-    # e.g., "gpt-4", "gpt-3.5-turbo", or a custom model name.
     OPENAI_MODEL_NAME="gpt-4"
     ```
 
 ## Usage
 
-The main command is `process`, which runs the full pipeline on a given audio file.
+The main command is `process`, which runs the full pipeline on a given input path.
 
 ```
 $ nice-tts --help
 ```
 ```
- Usage: nice-tts [OPTIONS] AUDIO_FILE
+ Usage: nice-tts [OPTIONS] INPUT_PATH
 
- Process an audio file through the full pipeline: Transcribe -> Refine ->
- Summarize.
+ Process a single audio file or all audio files in a directory.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    audio_file      FILE  Path to the audio file to process (e.g., WAV,     │
-│                            MP3).                                             │
+│ *    input_path      PATH  Path to a single audio file or a directory        │
+│                            containing audio files.                           │
 │                            [required]                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --model  -m      TEXT  The Whisper model to use for transcription (e.g.,     │
-│                        tiny, base, small, medium, large).                    │
-│                        [default: base]                                       │
-│ --help                 Show this message and exit.                           │
+│ --model       -m      TEXT       The Whisper model to use for transcription. │
+│                                  [default: large-v3-turbo]                   │
+│ --language    -l      TEXT       The language of the audio for transcription.│
+│                                  [default: zh]                               │
+│ --output-dir  -o      DIRECTORY  The directory to save output files.         │
+│                                  [default: out]                              │
+│ --force       -f                 Force re-processing of all steps.           │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-**Example:**
+### Processing a Single File
 
-To process an audio file named `meeting-2023-10-27.wav` using the `small` Whisper model:
+To process a single audio file named `meeting.wav`:
 ```bash
-nice-tts process /path/to/meeting-2023-10-27.wav --model small
+nice-tts process /path/to/meeting.wav
+```
+
+### Processing a Directory
+
+To process all supported audio files (`.wav`, `.mp3`, etc.) in a directory named `project_recordings`:
+```bash
+nice-tts process /path/to/project_recordings/ --output-dir project_results
 ```
 
 ## Output Files
 
-The tool will generate three files in the same directory as your input audio file:
+The tool will generate up to three files for each processed audio file in the specified output directory (defaulting to `out/`):
 
-1.  **SRT Transcript (`.srt`)**: A standard SubRip transcript file with timestamps.
-    -   Example: `meeting-2023-10-27.srt`
-
-2.  **Refined Text (`.fine.txt`)**: A clean, paragraph-formatted version of the transcript after being processed by the LLM.
-    -   Example: `meeting-2023-10-27.fine.txt`
-
-3.  **Markdown Summary (`.md`)**: A detailed meeting summary in Markdown format, with links to the other generated files.
-    -   Example: `meeting-2023-10-27.md`
+1.  **SRT Transcript (`.srt`)**
+2.  **Refined Text (`.fine.txt`)**
+3.  **Markdown Summary (`.md`)**
 
 ---
 *This project was created with the assistance of an AI software engineer.*
