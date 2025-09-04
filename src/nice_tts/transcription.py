@@ -4,14 +4,14 @@ from pathlib import Path
 
 def transcribe_audio(audio_path: str, model_name: str = "base") -> str:
     """
-    Transcribes an audio file using Whisper and saves the result as an SRT file.
+    Transcribes an audio file using Whisper and saves the result as a TXT file.
 
     Args:
         audio_path (str): The path to the audio file.
         model_name (str): The name of the Whisper model to use (e.g., "tiny", "base", "small", "medium", "large").
 
     Returns:
-        str: The path to the generated SRT file.
+        str: The path to the generated TXT file.
     """
     if not Path(audio_path).is_file():
         raise FileNotFoundError(f"Audio file not found at: {audio_path}")
@@ -28,22 +28,22 @@ def transcribe_audio(audio_path: str, model_name: str = "base") -> str:
     audio_basename = Path(audio_path).name
     file_name_without_ext = Path(audio_path).stem
 
-    # Get the SRT writer from whisper
-    writer = whisper.utils.get_writer("srt", str(output_dir))
+    # Get the TXT writer from whisper
+    writer = whisper.utils.get_writer("txt", str(output_dir))
 
-    # The writer creates a file named `audio_basename.srt`.
-    # For example, for "example.wav", it creates "example.wav.srt".
+    # The writer creates a file named `audio_basename.txt`.
+    # For example, for "example.wav", it creates "example.wav.txt".
     writer(result, audio_path)
 
-    # We want the file to be named "example.srt", so we rename it.
-    generated_srt_path = output_dir / f"{audio_basename}.srt"
-    desired_srt_path = output_dir / f"{file_name_without_ext}.srt"
+    # We want the file to be named "example.txt", so we rename it.
+    generated_txt_path = output_dir / f"{audio_basename}.txt"
+    desired_txt_path = output_dir / f"{file_name_without_ext}.txt"
 
-    os.rename(generated_srt_path, desired_srt_path)
+    os.rename(generated_txt_path, desired_txt_path)
 
-    print(f"Transcription saved to {desired_srt_path}")
+    print(f"Transcription saved to {desired_txt_path}")
 
-    return str(desired_srt_path)
+    return str(desired_txt_path)
 
 if __name__ == '__main__':
     # This is an example of how to use the function.
@@ -74,12 +74,12 @@ if __name__ == '__main__':
 
     try:
         # Transcribe the dummy audio file
-        srt_file_path = transcribe_audio(dummy_audio_path, model_name="tiny")
-        print(f"Successfully transcribed '{dummy_audio_path}' to '{srt_file_path}'")
+        txt_file_path = transcribe_audio(dummy_audio_path, model_name="tiny")
+        print(f"Successfully transcribed '{dummy_audio_path}' to '{txt_file_path}'")
 
-        # Print the content of the SRT file
-        with open(srt_file_path, 'r', encoding='utf-8') as f:
-            print("\n--- SRT File Content ---")
+        # Print the content of the TXT file
+        with open(txt_file_path, 'r', encoding='utf-8') as f:
+            print("\n--- TXT File Content ---")
             print(f.read())
             print("------------------------")
 
