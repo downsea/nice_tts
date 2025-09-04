@@ -1,0 +1,31 @@
+[project]
+name = "nice-tts"
+version = "0.1.0"
+description = "A CLI tool to transcribe, refine, and summarize audio files."
+authors = [{ name = "Jules", email = "jules@example.com" }]
+requires-python = ">=3.11"
+dependencies = [
+    "openai",
+    "python-dotenv",
+    "typer[all]",
+    "openai-whisper",
+    "torch",
+    "torchvision",
+    "torchaudio",
+]
+
+[project.scripts]
+nice-tts = "nice_tts.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nice_tts"]
