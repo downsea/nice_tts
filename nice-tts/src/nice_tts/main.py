@@ -1,6 +1,7 @@
 import typer
 from pathlib import Path
 import sys
+import torch
 
 from . import transcription
 from . import llm
@@ -56,7 +57,6 @@ def process(
     """
     Process a single audio file or all audio files in a directory.
     """
-    # Determine the list of audio files to process
     if input_path.is_dir():
         typer.secho(f"Scanning directory for audio files: {input_path}", fg=typer.colors.CYAN)
         audio_files = [
@@ -72,16 +72,13 @@ def process(
     output_dir.mkdir(parents=True, exist_ok=True)
     typer.secho(f"Output will be saved in: {output_dir}", fg=typer.colors.CYAN)
 
-    # Loop through each audio file and process it
     for i, audio_file in enumerate(audio_files, 1):
         typer.secho(f"\n--- Processing file {i}/{len(audio_files)}: {audio_file.name} ---", fg=typer.colors.BRIGHT_BLUE)
-
         base_name = audio_file.stem
         srt_path = output_dir / f"{base_name}.srt"
         refined_path = output_dir / f"{base_name}.fine.txt"
         summary_path = output_dir / f"{base_name}.md"
 
-        # --- Step 1: Transcription ---
         if force or not srt_path.exists():
             try:
                 typer.secho("Step 1: Transcribing...", fg=typer.colors.BLUE)
@@ -94,11 +91,10 @@ def process(
                 typer.secho(f"✔ Transcription successful: {srt_path}", fg=typer.colors.GREEN)
             except Exception as e:
                 typer.secho(f"Error during transcription: {e}", fg=typer.colors.RED, err=True)
-                continue # Skip to the next file
+                continue
         else:
             typer.secho(f"Step 1: Transcription skipped (file exists): {srt_path}", fg=typer.colors.YELLOW)
 
-        # --- Step 2: Refinement ---
         if force or not refined_path.exists():
             if not srt_path.exists():
                 typer.secho(f"Error: Cannot refine. SRT file missing: {srt_path}", fg=typer.colors.RED, err=True)
@@ -113,7 +109,6 @@ def process(
         else:
             typer.secho(f"Step 2: Refinement skipped (file exists): {refined_path}", fg=typer.colors.YELLOW)
 
-        # --- Step 3: Summarization ---
         if force or not summary_path.exists():
             if not refined_path.exists():
                 typer.secho(f"Error: Cannot summarize. Refined file missing: {refined_path}", fg=typer.colors.RED, err=True)
@@ -133,6 +128,29 @@ def process(
             typer.secho(f"Step 3: Summarization skipped (file exists): {summary_path}", fg=typer.colors.YELLOW)
 
     typer.secho("\n🎉 Batch processing complete!", fg=typer.colors.BRIGHT_GREEN)
+
+@app.command()
+def check_gpu():
+    """
+    Checks for PyTorch CUDA GPU availability and prints diagnostic information.
+    """
+    typer.secho("--- GPU / CUDA Availability Check ---", fg=typer.colors.CYAN)
+    try:
+        import torch
+        typer.secho(f"PyTorch Version: {torch.__version__}", fg=typer.colors.WHITE)
+        is_available = torch.cuda.is_available()
+        if is_available:
+            typer.secho("✔ SUCCESS: CUDA-enabled GPU is available.", fg=typer.colors.GREEN)
+            typer.secho(f"CUDA Version: {torch.version.cuda}", fg=typer.colors.WHITE)
+            typer.secho(f"GPU Device Count: {torch.cuda.device_count()}", fg=typer.colors.WHITE)
+            typer.secho(f"Current Device: {torch.cuda.get_device_name(torch.cuda.current_device())}", fg=typer.colors.WHITE)
+        else:
+            typer.secho("❌ WARNING: No CUDA-enabled GPU found.", fg=typer.colors.YELLOW)
+            typer.secho("The application will fall back to using the CPU, which will be significantly slower for transcription.", fg=typer.colors.YELLOW)
+    except ImportError:
+        typer.secho("Error: PyTorch is not installed. Please install it to run this application.", fg=typer.colors.RED)
+    except Exception as e:
+        typer.secho(f"An unexpected error occurred: {e}", fg=typer.colors.RED)
 
 if __name__ == "__main__":
     app()

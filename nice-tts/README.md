@@ -1,15 +1,14 @@
-# Nice-TTS: AI-Powered Transcription and Summarization
+# Nice-TTS: AI-Powered Transcription and Summarization (Chinese Optimized)
 
-Nice-TTS is a powerful, batch-capable command-line tool that leverages AI to transcribe audio recordings, refine the transcriptions, and generate detailed meeting summaries. It's designed for efficient processing of single audio files or entire directories of recordings.
+Nice-TTS is a powerful, batch-capable command-line tool that leverages AI to transcribe audio recordings, refine the transcriptions, and generate detailed meeting summaries. It is now optimized by default for **Chinese language** processing.
 
 ## Features
 
--   **AI-Powered Transcription**: Uses OpenAI's Whisper models to transcribe audio files.
+-   **AI-Powered Transcription**: Uses OpenAI's Whisper models to transcribe audio files. Defaults to Chinese.
+-   **Chinese-Optimized LLM Processing**: Refinement and summarization prompts are written in Chinese to provide high-quality, context-aware results for Chinese language audio.
 -   **Batch Processing**: Process a single audio file or all supported audio files in a directory.
--   **Configurable Language**: Supports transcription for various languages (defaults to Chinese, `zh`).
--   **LLM-Based Refinement**: Connects to any OpenAI-compatible LLM to clean up the raw transcript.
--   **Intelligent Summarization**: Generates a comprehensive meeting summary in Markdown format.
--   **Smart Processing**: Automatically skips completed steps if an output file is already present, saving time and resources. Can be overridden with a `--force` flag.
+-   **GPU Accelerated**: Automatically uses a CUDA-enabled GPU for transcription if available.
+-   **Smart Processing**: Automatically skips completed steps if an output file is already present.
 -   **Flexible Configuration**: Reads credentials from a local `.env` file or a global `~/.env` file.
 -   **Organized Output**: Saves all generated files into a specified output directory.
 
@@ -18,91 +17,50 @@ Nice-TTS is a powerful, batch-capable command-line tool that leverages AI to tra
 -   Python 3.11 or higher.
 -   `uv` for environment and package management (recommended).
 -   `ffmpeg`: Whisper requires `ffmpeg` to be installed on your system.
+-   For GPU acceleration, a CUDA-enabled NVIDIA GPU with the appropriate drivers.
 -   Access to an OpenAI-compatible LLM API with an API key.
 
 ## Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository_url>
-    cd nice-tts
-    ```
+1.  **Clone the repository:** `git clone <repository_url> && cd nice-tts`
+2.  **Create environment and install dependencies:** `uv venv && source .venv/bin/activate && uv pip install -e .`
 
-2.  **Create a virtual environment and install dependencies:**
-    ```bash
-    uv venv
-    source .venv/bin/activate
-    uv pip install -e .
-    ```
+## GPU Support Check
+
+To check if your system is ready for GPU acceleration, run:
+```bash
+nice-tts check-gpu
+```
 
 ## Configuration
 
-The tool needs API credentials to connect to an LLM. It will look for a `.env` file first in the current directory, and if not found, it will check your home directory for a `~/.env` file.
+The tool needs API credentials for an LLM. It checks for a `.env` file in the current directory, then in your home directory (`~/.env`).
 
-1.  **Create a `.env` file** in your project directory or your home directory. You can copy the example file:
-    ```bash
-    cp .env.example .env
-    ```
-
-2.  **Edit the `.env` file** with your details.
-
-    ```dotenv
-    # .env - OpenAI-compatible LLM configuration
-    OPENAI_API_KEY="your_api_key_here"
-    OPENAI_API_BASE="https://api.openai.com/v1"
-    OPENAI_MODEL_NAME="gpt-4"
-    ```
+-   Copy the example file: `cp .env.example .env`
+-   Edit the `.env` file with your details (API key, base URL, model name).
 
 ## Usage
 
-The main command is `process`, which runs the full pipeline on a given input path.
+The main command is `process`. By default, it assumes the audio is Chinese (`--language zh`) and will produce a Chinese refined transcript and summary.
 
-```
-$ nice-tts --help
-```
-```
- Usage: nice-tts [OPTIONS] INPUT_PATH
-
- Process a single audio file or all audio files in a directory.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    input_path      PATH  Path to a single audio file or a directory        │
-│                            containing audio files.                           │
-│                            [required]                                        │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --model       -m      TEXT       The Whisper model to use for transcription. │
-│                                  [default: large-v3-turbo]                   │
-│ --language    -l      TEXT       The language of the audio for transcription.│
-│                                  [default: zh]                               │
-│ --output-dir  -o      DIRECTORY  The directory to save output files.         │
-│                                  [default: out]                              │
-│ --force       -f                 Force re-processing of all steps.           │
-│ --help                           Show this message and exit.                 │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### Processing a Single File
-
-To process a single audio file named `meeting.wav`:
+### Processing Chinese Audio (Default)
 ```bash
-nice-tts process /path/to/meeting.wav
+# Process a single file
+nice-tts process /path/to/chinese_meeting.wav
+
+# Process a whole directory
+nice-tts process /path/to/recordings_folder/ --output-dir chinese_results
 ```
 
-### Processing a Directory
+### Processing English Audio
 
-To process all supported audio files (`.wav`, `.mp3`, etc.) in a directory named `project_recordings`:
+You can still process other languages by specifying the language code. Note that the LLM prompts are optimized for Chinese, so results in other languages may vary.
+
 ```bash
-nice-tts process /path/to/project_recordings/ --output-dir project_results
+nice-tts process /path/to/english_meeting.wav --language en
 ```
 
-## Output Files
-
-The tool will generate up to three files for each processed audio file in the specified output directory (defaulting to `out/`):
-
-1.  **SRT Transcript (`.srt`)**
-2.  **Refined Text (`.fine.txt`)**
-3.  **Markdown Summary (`.md`)**
+For all options, run `nice-tts --help`.
 
 ---
 *This project was created with the assistance of an AI software engineer.*
