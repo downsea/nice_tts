@@ -23,31 +23,36 @@ def load_llm_config():
         )
     return config
 
-def _parse_srt_to_text(srt_content: str) -> str:
-    """
-    Parses SRT content to extract plain text, ignoring timestamps and sequence numbers.
-    """
-    lines = srt_content.strip().split('\n')
-    text_parts = []
-    for line in lines:
-        line = line.strip()
-        if line and not line.isdigit() and '-->' not in line:
-            text_parts.append(line)
-    return " ".join(text_parts)
+import tiktoken
 
-def refine_transcript(srt_path: str) -> str:
+def _count_tokens(text: str, model_name: str = "gpt-4") -> int:
     """
-    Refines a transcript from an SRT file using an LLM.
+    Counts the number of tokens in a string using tiktoken.
+    Falls back to a character-based approximation if tiktoken is not available.
+    """
+    try:
+        # Get the encoding for the specified model
+        encoding = tiktoken.encoding_for_model(model_name)
+        return len(encoding.encode(text))
+    except ImportError:
+        # Fallback if tiktoken is not installed
+        return len(text) // 4
+
+
+def refine_transcript(txt_path: str, token_max: int) -> str:
+    """
+    Refines a transcript from a TXT file using an LLM.
 
     Args:
-        srt_path (str): The path to the SRT transcript file.
+        txt_path (str): The path to the TXT transcript file.
+        token_max (int): The maximum number of tokens per LLM request.
 
     Returns:
         str: The path to the refined text file.
     """
-    p_srt_path = Path(srt_path)
-    if not p_srt_path.is_file():
-        raise FileNotFoundError(f"SRT file not found at: {srt_path}")
+    p_txt_path = Path(txt_path)
+    if not p_txt_path.is_file():
+        raise FileNotFoundError(f"TXT file not found at: {txt_path}")
 
     # Load LLM configuration
     try:
@@ -56,15 +61,14 @@ def refine_transcript(srt_path: str) -> str:
         print(f"Error: {e}")
         raise
 
-    # Read and parse SRT content
-    with open(p_srt_path, 'r', encoding='utf-8') as f:
-        srt_content = f.read()
+    # Read transcript content
+    with open(p_txt_path, 'r', encoding='utf-8') as f:
+        transcript_text = f.read()
 
-    transcript_text = _parse_srt_to_text(srt_content)
-    if not transcript_text:
-        print("Warning: Could not extract any text from the SRT file.")
+    if not transcript_text.strip():
+        print("Warning: The transcript file is empty.")
         # Create an empty refined file and return
-        output_path = p_srt_path.with_suffix('.fine.txt')
+        output_path = p_txt_path.with_suffix('.fine.txt')
         output_path.touch()
         return str(output_path)
 
@@ -93,21 +97,63 @@ Here is the raw transcript:
     print("Connecting to LLM for transcript refinement...")
     try:
         client = OpenAI(api_key=config["api_key"], base_url=config["base_url"])
-        response = client.chat.completions.create(
-            model=config["model_name"],
-            messages=[
-                {"role": "system", "content": "You are an expert editor tasked with refining raw transcripts."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-        )
-        refined_text = response.choices[0].message.content or ""
+
+        total_tokens = _count_tokens(transcript_text, config["model_name"])
+
+        if total_tokens <= token_max:
+            print(f"Transcript is within token limit ({total_tokens} tokens). Processing as a single request.")
+            response = client.chat.completions.create(
+                model=config["model_name"],
+                messages=[
+                    {"role": "system", "content": "You are an expert editor tasked with refining raw transcripts."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+            )
+            refined_text = response.choices[0].message.content or ""
+        else:
+            print(f"Transcript exceeds token limit ({total_tokens} > {token_max}). Splitting into chunks.")
+
+            # Simple chunking by paragraphs. A more robust solution might split by sentences or tokens.
+            chunks = transcript_text.split('\n\n')
+            refined_chunks = []
+
+            for i, chunk in enumerate(chunks):
+                chunk_tokens = _count_tokens(chunk, config["model_name"])
+                if chunk_tokens == 0:
+                    continue
+
+                print(f"Processing chunk {i+1}/{len(chunks)} ({chunk_tokens} tokens)...")
+
+                chunk_prompt = f"""
+You are a highly skilled editor. Your task is to refine the following raw, auto-generated transcript of a meeting or recording.
+The goal is to produce a clean, readable, and well-formatted text that accurately represents the original conversation.
+Please perform the same actions as before (correct punctuation, spelling, grammar; remove fillers; merge sentences; structure paragraphs).
+This is one of several chunks. Do not add any headers, titles, or speaker labels.
+
+Here is the raw transcript chunk:
+---
+{chunk}
+---
+"""
+                response = client.chat.completions.create(
+                    model=config["model_name"],
+                    messages=[
+                        {"role": "system", "content": "You are an expert editor processing a chunk of a larger transcript."},
+                        {"role": "user", "content": chunk_prompt},
+                    ],
+                    temperature=0.2,
+                )
+                refined_chunks.append(response.choices[0].message.content or "")
+
+            refined_text = "\n\n".join(refined_chunks)
+
     except Exception as e:
         print(f"An error occurred while communicating with the LLM: {e}")
         raise
 
     # Save the refined text
-    output_path = p_srt_path.with_suffix('.fine.txt')
+    output_path = p_txt_path.with_suffix('.fine.txt')
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(refined_text)
 
@@ -117,13 +163,14 @@ Here is the raw transcript:
 from datetime import datetime
 
 
-def summarize_transcript(refined_text_path: str, original_audio_path: str) -> str:
+def summarize_transcript(refined_text_path: str, original_audio_path: str, token_max: int) -> str:
     """
     Generates a meeting summary from a refined transcript using an LLM.
 
     Args:
         refined_text_path (str): The path to the refined transcript file (.fine.txt).
         original_audio_path (str): The path to the original audio file, used for metadata.
+        token_max (int): The maximum number of tokens per LLM request.
 
     Returns:
         str: The path to the generated Markdown summary file.
@@ -148,11 +195,11 @@ def summarize_transcript(refined_text_path: str, original_audio_path: str) -> st
         return str(output_path)
 
     # Prepare file links for the summary
-    srt_path = p_original_audio_path.with_suffix('.srt')
+    txt_path = p_original_audio_path.with_suffix('.txt')
 
     # Using relative paths for portability in the final markdown
     audio_link = f"[{p_original_audio_path.name}](./{p_original_audio_path.name})"
-    srt_link = f"[{srt_path.name}](./{srt_path.name})"
+    txt_link = f"[{txt_path.name}](./{txt_path.name})"
     refined_text_link = f"[{p_refined_text_path.name}](./{p_refined_text_path.name})"
 
     # Prepare the prompt for the LLM
@@ -182,7 +229,7 @@ Based on the provided transcript and file metadata, generate a detailed meeting 
 
 **File Links to Include:**
 - Original Audio: {audio_link}
-- SRT Transcript: {srt_link}
+- Transcript: {txt_link}
 - Refined Transcript: {refined_text_link}
 
 Please generate the complete Markdown summary now.
@@ -192,15 +239,76 @@ Please generate the complete Markdown summary now.
     print("Connecting to LLM for summarization...")
     try:
         client = OpenAI(api_key=config["api_key"], base_url=config["base_url"])
-        response = client.chat.completions.create(
-            model=config["model_name"],
-            messages=[
-                {"role": "system", "content": "You are a professional assistant that writes meeting summaries."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.5,
-        )
-        summary_md = response.choices[0].message.content or ""
+
+        total_tokens = _count_tokens(refined_text, config["model_name"])
+
+        if total_tokens <= token_max:
+            print(f"Transcript is within token limit ({total_tokens} tokens). Processing as a single request.")
+            response = client.chat.completions.create(
+                model=config["model_name"],
+                messages=[
+                    {"role": "system", "content": "You are a professional assistant that writes meeting summaries."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.5,
+            )
+            summary_md = response.choices[0].message.content or ""
+        else:
+            print(f"Transcript exceeds token limit ({total_tokens} > {token_max}). Splitting into chunks for summarization.")
+
+            chunks = refined_text.split('\n\n')
+            chunk_summaries = []
+
+            # Map step: Summarize each chunk
+            for i, chunk in enumerate(chunks):
+                chunk_tokens = _count_tokens(chunk, config["model_name"])
+                if chunk_tokens == 0:
+                    continue
+
+                print(f"Summarizing chunk {i+1}/{len(chunks)} ({chunk_tokens} tokens)...")
+                chunk_prompt = f"Please summarize the following text chunk:\n\n---\n{chunk}\n---"
+                response = client.chat.completions.create(
+                    model=config["model_name"],
+                    messages=[
+                        {"role": "system", "content": "You are an assistant that summarizes text chunks."},
+                        {"role": "user", "content": chunk_prompt},
+                    ],
+                    temperature=0.3,
+                )
+                chunk_summaries.append(response.choices[0].message.content or "")
+
+            # Reduce step: Combine summaries
+            combined_summary_text = "\n\n".join(chunk_summaries)
+            print("Combining chunk summaries into a final summary...")
+
+            # The original prompt is now used to format the combined summary
+            final_prompt = f"""
+You are a professional assistant responsible for creating a final, consolidated meeting summary from a series of partial summaries.
+Based on the provided partial summaries and file metadata, generate a detailed meeting summary in Markdown format.
+Please follow the original instructions for structure (Meeting Details, Overview, etc.) and file links.
+
+**Partial Summaries:**
+---
+{combined_summary_text}
+---
+
+**File Links to Include:**
+- Original Audio: {audio_link}
+- Transcript: {txt_link}
+- Refined Transcript: {refined_text_link}
+
+Please generate the complete and consolidated Markdown summary now.
+"""
+            response = client.chat.completions.create(
+                model=config["model_name"],
+                messages=[
+                    {"role": "system", "content": "You are a professional assistant that combines partial summaries into a final report."},
+                    {"role": "user", "content": final_prompt},
+                ],
+                temperature=0.5,
+            )
+            summary_md = response.choices[0].message.content or ""
+
     except Exception as e:
         print(f"An error occurred while communicating with the LLM: {e}")
         raise
@@ -231,17 +339,17 @@ if __name__ == '__main__':
 
     # --- Test for Refinement ---
     print("\n--- Testing Transcript Refinement ---")
-    dummy_srt_path = "example.srt"
-    if not Path(dummy_srt_path).is_file():
-        print(f"Creating a dummy SRT file '{dummy_srt_path}' for testing.")
-        with open(dummy_srt_path, "w", encoding="utf-8") as f:
-            f.write("1\n00:00:01,123 --> 00:00:03,456\nokay so um i think we can start the meeting now\n\n")
+    dummy_txt_path = "example.txt"
+    if not Path(dummy_txt_path).is_file():
+        print(f"Creating a dummy TXT file '{dummy_txt_path}' for testing.")
+        with open(dummy_txt_path, "w", encoding="utf-8") as f:
+            f.write("okay so um i think we can start the meeting now\n\n")
 
     print("Attempting to refine the dummy transcript...")
     print("NOTE: This will fail if you have not configured a valid .env file.")
 
     try:
-        refined_file = refine_transcript(dummy_srt_path)
+        refined_file = refine_transcript(dummy_txt_path, token_max=128000)
         print(f"Successfully refined transcript. Output at: {refined_file}")
     except Exception as e:
         print(f"Refinement process failed as expected (or unexpectedly): {e}")
@@ -259,7 +367,7 @@ if __name__ == '__main__':
     print("NOTE: This will also fail if you have not configured a valid .env file.")
 
     try:
-        summary_file = summarize_transcript(dummy_refined_path, dummy_audio_path)
+        summary_file = summarize_transcript(dummy_refined_path, dummy_audio_path, token_max=128000)
         print(f"Successfully generated summary. Output at: {summary_file}")
         with open(summary_file, 'r', encoding='utf-8') as f:
             print("\n--- Generated Summary ---")

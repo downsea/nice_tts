@@ -46,6 +46,12 @@ def process(
         writable=True,
         resolve_path=True,
     ),
+    token_max: int = typer.Option(
+        128000,
+        "--token-max",
+        "-t",
+        help="The maximum number of tokens to send to the LLM in a single request.",
+    ),
 ):
     """
     Process an audio file through the full pipeline: Transcribe -> Refine -> Summarize.
@@ -53,12 +59,12 @@ def process(
     typer.secho(f"🚀 Starting processing for: {audio_file.name}", fg=typer.colors.CYAN)
 
     # --- Step 1: Transcription ---
-    srt_path = ""
+    txt_path = ""
     try:
         typer.secho("\nStep 1: Transcribing audio file...", fg=typer.colors.BLUE)
         # Assuming transcribe_audio is in the transcription module
-        srt_path = transcription.transcribe_audio(str(audio_file), model_name=whisper_model)
-        typer.secho(f"✔ Transcription successful. SRT file saved at: {srt_path}", fg=typer.colors.GREEN)
+        txt_path = transcription.transcribe_audio(str(audio_file), model_name=whisper_model)
+        typer.secho(f"✔ Transcription successful. TXT file saved at: {txt_path}", fg=typer.colors.GREEN)
     except FileNotFoundError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
@@ -72,10 +78,10 @@ def process(
     try:
         typer.secho("\nStep 2: Refining transcript with LLM...", fg=typer.colors.BLUE)
         # Assuming refine_transcript is in the llm module
-        refined_path = llm.refine_transcript(srt_path)
+        refined_path = llm.refine_transcript(txt_path, token_max=token_max)
         typer.secho(f"✔ Refinement successful. Refined text saved at: {refined_path}", fg=typer.colors.GREEN)
     except FileNotFoundError as e:
-        typer.secho(f"Error: Could not find the SRT file for refinement. {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: Could not find the TXT file for refinement. {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
     except Exception as e:
         typer.secho(f"An error occurred during LLM refinement: {e}", fg=typer.colors.RED, err=True)
@@ -86,7 +92,7 @@ def process(
     try:
         typer.secho("\nStep 3: Generating summary with LLM...", fg=typer.colors.BLUE)
         # Assuming summarize_transcript is in the llm module
-        summary_path = llm.summarize_transcript(refined_path, str(audio_file))
+        summary_path = llm.summarize_transcript(refined_path, str(audio_file), token_max=token_max)
         typer.secho(f"✔ Summarization successful. Summary saved at: {summary_path}", fg=typer.colors.GREEN)
     except FileNotFoundError as e:
         typer.secho(f"Error: Could not find the refined text file for summarization. {e}", fg=typer.colors.RED, err=True)
