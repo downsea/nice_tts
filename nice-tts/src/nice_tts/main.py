@@ -75,33 +75,33 @@ def process(
     for i, audio_file in enumerate(audio_files, 1):
         typer.secho(f"\n--- Processing file {i}/{len(audio_files)}: {audio_file.name} ---", fg=typer.colors.BRIGHT_BLUE)
         base_name = audio_file.stem
-        srt_path = output_dir / f"{base_name}.srt"
+        txt_path = output_dir / f"{base_name}.txt"
         refined_path = output_dir / f"{base_name}.fine.txt"
         summary_path = output_dir / f"{base_name}.md"
 
-        if force or not srt_path.exists():
+        if force or not txt_path.exists():
             try:
                 typer.secho("Step 1: Transcribing...", fg=typer.colors.BLUE)
                 transcription.transcribe_audio(
                     audio_path=str(audio_file),
-                    output_srt_path=str(srt_path),
+                    output_txt_path=str(txt_path),
                     model_name=whisper_model,
                     language=language,
                 )
-                typer.secho(f"✔ Transcription successful: {srt_path}", fg=typer.colors.GREEN)
+                typer.secho(f"✔ Transcription successful: {txt_path}", fg=typer.colors.GREEN)
             except Exception as e:
                 typer.secho(f"Error during transcription: {e}", fg=typer.colors.RED, err=True)
                 continue
         else:
-            typer.secho(f"Step 1: Transcription skipped (file exists): {srt_path}", fg=typer.colors.YELLOW)
+            typer.secho(f"Step 1: Transcription skipped (file exists): {txt_path}", fg=typer.colors.YELLOW)
 
         if force or not refined_path.exists():
-            if not srt_path.exists():
-                typer.secho(f"Error: Cannot refine. SRT file missing: {srt_path}", fg=typer.colors.RED, err=True)
+            if not txt_path.exists():
+                typer.secho(f"Error: Cannot refine. TXT file missing: {txt_path}", fg=typer.colors.RED, err=True)
                 continue
             try:
                 typer.secho("Step 2: Refining transcript...", fg=typer.colors.BLUE)
-                llm.refine_transcript(srt_path=str(srt_path), output_fine_path=str(refined_path))
+                llm.refine_transcript(txt_path=str(txt_path), output_fine_path=str(refined_path))
                 typer.secho(f"✔ Refinement successful: {refined_path}", fg=typer.colors.GREEN)
             except Exception as e:
                 typer.secho(f"Error during refinement: {e}", fg=typer.colors.RED, err=True)
