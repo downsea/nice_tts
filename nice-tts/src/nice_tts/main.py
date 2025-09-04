@@ -53,6 +53,11 @@ def process(
         "-f",
         help="Force re-processing of all steps.",
     ),
+    no_ssl_verify: bool = typer.Option(
+        False,
+        "--no-ssl-verify",
+        help="Disable SSL verification for downloading tokenizer data. Use with caution.",
+    ),
 ):
     """
     Process a single audio file or all audio files in a directory.
@@ -101,7 +106,11 @@ def process(
                 continue
             try:
                 typer.secho("Step 2: Refining transcript...", fg=typer.colors.BLUE)
-                llm.refine_transcript(txt_path=str(txt_path), output_fine_path=str(refined_path))
+                llm.refine_transcript(
+                    txt_path=str(txt_path),
+                    output_fine_path=str(refined_path),
+                    no_ssl_verify=no_ssl_verify,
+                )
                 typer.secho(f"✔ Refinement successful: {refined_path}", fg=typer.colors.GREEN)
             except Exception as e:
                 typer.secho(f"Error during refinement: {e}", fg=typer.colors.RED, err=True)
@@ -119,6 +128,7 @@ def process(
                     refined_text_path=str(refined_path),
                     original_audio_path=str(audio_file),
                     output_md_path=str(summary_path),
+                    no_ssl_verify=no_ssl_verify,
                 )
                 typer.secho(f"✔ Summarization successful: {summary_path}", fg=typer.colors.GREEN)
             except Exception as e:

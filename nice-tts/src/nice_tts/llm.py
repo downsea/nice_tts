@@ -5,6 +5,25 @@ from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
 import tiktoken
+import ssl
+import typer
+
+def _disable_ssl_verify():
+    """
+    Disables SSL verification via monkey-patching.
+    This is a workaround for issues in some corporate environments with proxies.
+    """
+    try:
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
+        # Fallback for environments where this is not available
+        pass
+    else:
+        ssl._create_default_https_context = _create_unverified_https_context
+    typer.secho(
+        "Warning: SSL verification has been disabled. This is not recommended.",
+        fg=typer.colors.YELLOW,
+    )
 
 def load_llm_config():
     """
@@ -84,10 +103,13 @@ def _split_text_into_chunks(text: str, max_tokens: int, model: str) -> list[str]
 
     return chunks
 
-def refine_transcript(txt_path: str, output_fine_path: str) -> str:
+def refine_transcript(txt_path: str, output_fine_path: str, no_ssl_verify: bool = False) -> str:
     """
     Refines a transcript from a TXT file using an LLM and saves it to a specified path.
     """
+    if no_ssl_verify:
+        _disable_ssl_verify()
+
     p_txt_path = Path(txt_path)
     if not p_txt_path.is_file():
         raise FileNotFoundError(f"TXT file not found at: {txt_path}")
@@ -141,11 +163,14 @@ def refine_transcript(txt_path: str, output_fine_path: str) -> str:
     return output_fine_path
 
 def summarize_transcript(
-    refined_text_path: str, original_audio_path: str, output_md_path: str
+    refined_text_path: str, original_audio_path: str, output_md_path: str, no_ssl_verify: bool = False
 ) -> str:
     """
     Generates a Chinese meeting summary and saves it to a specified path.
     """
+    if no_ssl_verify:
+        _disable_ssl_verify()
+
     p_refined_text_path = Path(refined_text_path)
     p_original_audio_path = Path(original_audio_path)
     if not p_refined_text_path.is_file():
