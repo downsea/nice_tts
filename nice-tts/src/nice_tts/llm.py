@@ -4,6 +4,7 @@ from pathlib import Path
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
 from datetime import datetime
+import tiktoken
 
 def load_llm_config():
     """
@@ -23,8 +24,9 @@ def load_llm_config():
         "api_key": os.getenv("OPENAI_API_KEY"),
         "base_url": os.getenv("OPENAI_API_BASE"),
         "model_name": os.getenv("OPENAI_MODEL_NAME"),
+        "token_max": int(os.getenv("LLM_TOKEN_MAX", 128000)),
     }
-    if not all(config.values()):
+    if not all(k in config and config[k] is not None for k in ["api_key", "base_url", "model_name"]):
         raise ValueError(
             "Missing one or more required environment variables: "
             "OPENAI_API_KEY, OPENAI_API_BASE, OPENAI_MODEL_NAME. "
@@ -32,37 +34,81 @@ def load_llm_config():
         )
     return config
 
-def _parse_srt_to_text(srt_content: str) -> str:
+def _count_tokens(text: str, model: str) -> int:
     """
-    Parses SRT content to extract plain text.
+    Counts the number of tokens in a text string using tiktoken.
     """
-    lines = srt_content.strip().split('\n')
-    text_parts = []
-    for line in lines:
-        line = line.strip()
-        if line and not line.isdigit() and '-->' not in line:
-            text_parts.append(line)
-    return " ".join(text_parts)
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoding = tiktoken.get_encoding("cl100k_base")
+    return len(encoding.encode(text))
 
-def refine_transcript(srt_path: str, output_fine_path: str) -> str:
+def _split_text_into_chunks(text: str, max_tokens: int, model: str) -> list[str]:
     """
-    Refines a transcript from an SRT file using an LLM and saves it to a specified path.
+    Splits a text into chunks of a maximum number of tokens.
     """
-    p_srt_path = Path(srt_path)
-    if not p_srt_path.is_file():
-        raise FileNotFoundError(f"SRT file not found at: {srt_path}")
+    if _count_tokens(text, model) <= max_tokens:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+    # Split by paragraphs first to maintain context
+    paragraphs = text.split('\n\n')
+    for paragraph in paragraphs:
+        if not paragraph.strip():
+            continue
+
+        # Check if the current chunk + new paragraph exceeds the token limit
+        if _count_tokens(current_chunk + "\n\n" + paragraph, model) > max_tokens:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = paragraph
+            # If a single paragraph is too long, it must be split
+            while _count_tokens(current_chunk, model) > max_tokens:
+                # A simple split by sentences or words would be needed here.
+                # For simplicity, we'll split by half until it fits.
+                split_point = len(current_chunk) // 2
+                # Find a better split point (e.g., end of a sentence)
+                sentence_end = current_chunk.rfind('.', 0, split_point)
+                if sentence_end != -1:
+                    split_point = sentence_end + 1
+
+                chunks.append(current_chunk[:split_point])
+                current_chunk = current_chunk[split_point:]
+        else:
+            current_chunk += ("\n\n" + paragraph) if current_chunk else paragraph
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+def refine_transcript(txt_path: str, output_fine_path: str) -> str:
+    """
+    Refines a transcript from a TXT file using an LLM and saves it to a specified path.
+    """
+    p_txt_path = Path(txt_path)
+    if not p_txt_path.is_file():
+        raise FileNotFoundError(f"TXT file not found at: {txt_path}")
 
     config = load_llm_config()
-    with open(p_srt_path, 'r', encoding='utf-8') as f:
-        srt_content = f.read()
+    with open(p_txt_path, 'r', encoding='utf-8') as f:
+        transcript_text = f.read()
 
-    transcript_text = _parse_srt_to_text(srt_content)
-    if not transcript_text:
-        print("警告: 未能从SRT文件中提取任何文本。")
+    if not transcript_text.strip():
+        print("Warning: The transcript file is empty.")
         Path(output_fine_path).touch()
         return output_fine_path
 
-    prompt = f"""
+    text_chunks = _split_text_into_chunks(transcript_text, config["token_max"], config["model_name"])
+
+    refined_chunks = []
+    client = OpenAI(api_key=config["api_key"], base_url=config["base_url"])
+
+    for i, chunk in enumerate(text_chunks):
+        print(f"Refining chunk {i + 1}/{len(text_chunks)}...")
+        prompt = f"""
 您是一位专业的速记稿后期处理专家。您的任务是优化下方由自动语音识别（ASR）生成的原始会议记录文本。请严格按照以下要求操作，以生成一份流畅、准确、易读的精校版中文文稿。
 
 **处理要求：**
@@ -75,25 +121,23 @@ def refine_transcript(srt_path: str, output_fine_path: str) -> str:
 
 **原始速记稿文本如下：**
 ---
-{transcript_text}
+{chunk}
 ---
 """
+        response = client.chat.completions.create(
+            model=config["model_name"],
+            messages=[
+                {"role": "system", "content": "你是一位专业的速记稿后期处理专家，请使用中文输出。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        refined_chunks.append(response.choices[0].message.content or "")
 
-    print("正在连接大语言模型以优化文本...")
-    client = OpenAI(api_key=config["api_key"], base_url=config["base_url"])
-    response = client.chat.completions.create(
-        model=config["model_name"],
-        messages=[
-            {"role": "system", "content": "你是一位专业的速记稿后期处理专家，请使用中文输出。"},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.2,
-    )
-    refined_text = response.choices[0].message.content or ""
-
+    refined_text = "\n\n".join(refined_chunks)
     with open(output_fine_path, 'w', encoding='utf-8') as f:
         f.write(refined_text)
-    print(f"优化后的文本已保存至: {output_fine_path}")
+    print(f"Optimized text saved to: {output_fine_path}")
     return output_fine_path
 
 def summarize_transcript(
@@ -112,22 +156,62 @@ def summarize_transcript(
         refined_text = f.read()
 
     if not refined_text.strip():
-        print("警告: 优化后的文本为空，无法生成摘要。")
+        print("Warning: Refined text is empty, cannot generate summary.")
         Path(output_md_path).touch()
         return output_md_path
 
     # Create relative paths for the links in the markdown file
     output_dir = Path(output_md_path).parent
     audio_rel_path = os.path.relpath(p_original_audio_path, output_dir)
-    srt_rel_path = os.path.relpath(output_dir / f"{p_original_audio_path.stem}.srt", output_dir)
+    # The srt file is no longer generated, so we link to the raw txt instead.
+    txt_path = output_dir / f"{p_original_audio_path.stem}.txt"
+    txt_rel_path = os.path.relpath(txt_path, output_dir)
     refined_rel_path = os.path.relpath(p_refined_text_path, output_dir)
 
     audio_link = f"[{p_original_audio_path.name}](./{audio_rel_path})"
-    srt_link = f"[{Path(srt_rel_path).name}](./{srt_rel_path})"
+    # Link to the raw .txt file instead of the .srt
+    raw_text_link = f"[{txt_path.name}](./{txt_rel_path})"
     refined_text_link = f"[{Path(refined_rel_path).name}](./{refined_rel_path})"
 
+    text_chunks = _split_text_into_chunks(refined_text, config["token_max"], config["model_name"])
+
+    # If text is chunked, we summarize each chunk and then create a final summary.
+    if len(text_chunks) > 1:
+        print("Text is too long, generating summary in chunks...")
+        summaries = []
+        client = OpenAI(api_key=config["api_key"], base_url=config["base_url"])
+        for i, chunk in enumerate(text_chunks):
+            print(f"Summarizing chunk {i + 1}/{len(text_chunks)}...")
+            prompt = f"""
+您是一位专业的会议助理。请根据下方提供的会议文稿片段，生成一个该片段的简洁摘要。
+
+**会议文稿片段:**
+---
+{chunk}
+---
+"""
+            response = client.chat.completions.create(
+                model=config["model_name"],
+                messages=[
+                    {"role": "system", "content": "你是一位专业的会议助理，请使用中文输出摘要。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+            )
+            summaries.append(response.choices[0].message.content or "")
+
+        # Combine summaries and create a final meta-summary
+        combined_summary_text = "\n\n---\n\n".join(summaries)
+        print("Creating a final summary from chunked summaries...")
+        final_prompt_text = combined_summary_text
+        summary_system_prompt = "你是一位专业的会议助理，请根据下方提供的各部分摘要，整合成一份完整的、有条理的中文会议纪要。"
+    else:
+        final_prompt_text = refined_text
+        summary_system_prompt = "你是一位专业的会议助理，请使用中文输出Markdown格式的会议纪要。"
+
+
     prompt = f"""
-您是一位专业的会议助理。请根据下方提供的优化后会议文稿和文件元信息，生成一份详细、有条理的中文会议纪要。
+{summary_system_prompt}
 
 **指令：**
 1.  **提取元信息**:
@@ -144,23 +228,23 @@ def summarize_transcript(
 
 3.  **包含相关文件链接**: 在纪要末尾，添加 `## 相关文件` 部分，并附上以下链接：
     - 原始录音: {audio_link}
-    - SRT字幕: {srt_link}
+    - 原始文本: {raw_text_link}
     - 精校文本: {refined_text_link}
 
 **优化后的会议文稿:**
 ---
-{refined_text}
+{final_prompt_text}
 ---
 
 请现在开始生成完整的中文Markdown格式会议纪要。
 """
 
-    print("正在连接大语言模型以生成会议纪要...")
+    print("Connecting to the LLM to generate the meeting summary...")
     client = OpenAI(api_key=config["api_key"], base_url=config["base_url"])
     response = client.chat.completions.create(
         model=config["model_name"],
         messages=[
-            {"role": "system", "content": "你是一位专业的会议助理，请使用中文输出Markdown格式的会议纪要。"},
+            {"role": "system", "content": summary_system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.5,
@@ -169,5 +253,5 @@ def summarize_transcript(
 
     with open(output_md_path, 'w', encoding='utf-8') as f:
         f.write(summary_md)
-    print(f"会议纪要已保存至: {output_md_path}")
+    print(f"Meeting summary saved to: {output_md_path}")
     return output_md_path
