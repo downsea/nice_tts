@@ -8,22 +8,27 @@ import tiktoken
 import ssl
 import typer
 
+import urllib.request
+
 def _disable_ssl_verify():
     """
-    Disables SSL verification via monkey-patching.
+    Disables SSL verification via monkey-patching urllib.request.
     This is a workaround for issues in some corporate environments with proxies.
     """
     try:
-        _create_unverified_https_context = ssl._create_unverified_context
-    except AttributeError:
-        # Fallback for environments where this is not available
-        pass
-    else:
-        ssl._create_default_https_context = _create_unverified_https_context
-    typer.secho(
-        "Warning: SSL verification has been disabled. This is not recommended.",
-        fg=typer.colors.YELLOW,
-    )
+        context = ssl._create_unverified_context()
+        https_handler = urllib.request.HTTPSHandler(context=context)
+        opener = urllib.request.build_opener(https_handler)
+        urllib.request.install_opener(opener)
+        typer.secho(
+            "Warning: SSL verification has been disabled. This is not recommended.",
+            fg=typer.colors.YELLOW,
+        )
+    except Exception as e:
+        typer.secho(
+            f"Failed to disable SSL verification: {e}",
+            fg=typer.colors.RED,
+        )
 
 def load_llm_config():
     """
