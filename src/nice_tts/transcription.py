@@ -26,7 +26,7 @@ def transcribe_audio(
     print(f"Transcribing {audio_path} (Language: {language})...")
     result = model.transcribe(audio_path, language=language, verbose=False)
 
-    transcribed_text = result['text'].strip()
+    transcribed_text = str(result['text']).strip()
 
     with open(output_txt_path, 'w', encoding='utf-8') as f:
         f.write(transcribed_text)

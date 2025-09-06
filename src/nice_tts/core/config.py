@@ -39,17 +39,21 @@ class TranscriptionConfig:
     temperature: float = 0.0
     best_of: int = 5
     beam_size: int = 5
+    format_output: bool = True  # Format transcript with each sentence on new line
+    line_break_mode: str = "sentence"  # "sentence" or "segment"
     
     def __post_init__(self):
         """Post-initialization validation."""
         if self.temperature < 0 or self.temperature > 1:
             raise ValueError("Temperature must be between 0 and 1")
+        if self.line_break_mode not in ["sentence", "segment"]:
+            raise ValueError("line_break_mode must be 'sentence' or 'segment'")
 
 
 @dataclass  
 class LLMConfig:
     """Configuration for LLM engines."""
-    provider: str = "openai"  # openai, claude
+    provider: str = "openai"  # openai, ollama
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     model_name: Optional[str] = None
@@ -57,6 +61,9 @@ class LLMConfig:
     temperature: float = 0.2
     max_retries: int = 3
     timeout: int = 60
+    enable_chunking: bool = True  # Enable intelligent text chunking
+    chunk_overlap: int = 100  # Token overlap between chunks
+    safety_margin: float = 0.8  # Use 80% of max_tokens for safety
     
     def __post_init__(self):
         """Post-initialization validation."""
@@ -64,6 +71,10 @@ class LLMConfig:
             raise ValueError("Temperature must be between 0 and 2")
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
+        if not 0 < self.safety_margin <= 1.0:
+            raise ValueError("safety_margin must be between 0 and 1")
+        if self.chunk_overlap < 0:
+            raise ValueError("chunk_overlap must be non-negative")
 
 
 @dataclass
@@ -176,13 +187,22 @@ class ConfigService:
         Returns:
             bool: True if valid, raises exception if invalid
         """
-        # Validate LLM configuration has required fields
-        if not config.llm.api_key:
-            raise ValueError("LLM API key is required")
-        if not config.llm.base_url:
-            raise ValueError("LLM base URL is required") 
-        if not config.llm.model_name:
-            raise ValueError("LLM model name is required")
+        # Validate LLM configuration based on provider
+        if config.llm.provider == "ollama":
+            # Ollama doesn't require API key, but needs model name
+            if not config.llm.model_name:
+                raise ValueError("Ollama model name is required")
+            # Set default base URL if not provided
+            if not config.llm.base_url:
+                config.llm.base_url = "http://localhost:11434"
+        else:
+            # OpenAI requires API key
+            if not config.llm.api_key:
+                raise ValueError("LLM API key is required")
+            if not config.llm.base_url:
+                raise ValueError("LLM base URL is required") 
+            if not config.llm.model_name:
+                raise ValueError("LLM model name is required")
         
         # Validate output directory is writable
         try:
@@ -208,21 +228,15 @@ class ConfigService:
         """Load environment variables from .env files.
         
         Load order (later overrides earlier):
-        1. Global ~/.env file
-        2. Local .env file (current directory)
-        3. Specified config file
+        1. Local .env file (current working directory) - DEFAULT
+        2. Specified config file (if provided)
         """
-        # Load global .env file
-        global_dotenv_path = Path.home() / ".env"
-        if global_dotenv_path.is_file():
-            load_dotenv(dotenv_path=global_dotenv_path)
+        # Load local .env file from current working directory (DEFAULT)
+        local_dotenv_path = Path.cwd() / ".env"
+        if local_dotenv_path.is_file():
+            load_dotenv(dotenv_path=local_dotenv_path)
         
-        # Load local .env file
-        local_dotenv_path = find_dotenv(usecwd=True)
-        if local_dotenv_path:
-            load_dotenv(dotenv_path=local_dotenv_path, override=True)
-        
-        # Load specified config file
+        # Load specified config file only if explicitly provided (overrides everything)
         if config_file and config_file.is_file():
             load_dotenv(dotenv_path=config_file, override=True)
     
@@ -256,6 +270,15 @@ class ConfigService:
         if cache_dir := os.getenv("WHISPER_CACHE_DIR"):
             config["transcription"]["cache_dir"] = cache_dir
         
+        # New formatting options
+        if format_output := os.getenv("WHISPER_FORMAT_OUTPUT"):
+            config["transcription"]["format_output"] = format_output.lower() in ("true", "1", "yes")
+        if line_break_mode := os.getenv("WHISPER_LINE_BREAK_MODE"):
+            if line_break_mode in ["sentence", "segment"]:
+                config["transcription"]["line_break_mode"] = line_break_mode
+            elif typer:
+                typer.secho(f"Warning: Invalid WHISPER_LINE_BREAK_MODE value: {line_break_mode}", fg=typer.colors.YELLOW)
+        
         # LLM settings
         if api_key := os.getenv("OPENAI_API_KEY"):
             config["llm"]["api_key"] = api_key
@@ -265,12 +288,40 @@ class ConfigService:
             config["llm"]["model_name"] = model_name
         if provider := os.getenv("LLM_PROVIDER"):
             config["llm"]["provider"] = provider
+        
+        # Support for Ollama-specific configuration
+        if api_key := os.getenv("OLLAMA_API_KEY"):
+            config["llm"]["api_key"] = api_key
+        if base_url := os.getenv("OLLAMA_API_BASE"):
+            config["llm"]["base_url"] = base_url
+        if model_name := os.getenv("OLLAMA_MODEL_NAME"):
+            config["llm"]["model_name"] = model_name
         if max_tokens := os.getenv("LLM_TOKEN_MAX"):
             try:
                 config["llm"]["max_tokens"] = int(max_tokens)
             except ValueError:
                 if typer:
                     typer.secho(f"Warning: Invalid LLM_TOKEN_MAX value: {max_tokens}", fg=typer.colors.YELLOW)
+        
+        # New LLM chunking options
+        if enable_chunking := os.getenv("LLM_ENABLE_CHUNKING"):
+            config["llm"]["enable_chunking"] = enable_chunking.lower() in ("true", "1", "yes")
+        if chunk_overlap := os.getenv("LLM_CHUNK_OVERLAP"):
+            try:
+                config["llm"]["chunk_overlap"] = int(chunk_overlap)
+            except ValueError:
+                if typer:
+                    typer.secho(f"Warning: Invalid LLM_CHUNK_OVERLAP value: {chunk_overlap}", fg=typer.colors.YELLOW)
+        if safety_margin := os.getenv("LLM_SAFETY_MARGIN"):
+            try:
+                margin = float(safety_margin)
+                if 0 < margin <= 1.0:
+                    config["llm"]["safety_margin"] = margin
+                elif typer:
+                    typer.secho(f"Warning: LLM_SAFETY_MARGIN must be between 0 and 1: {safety_margin}", fg=typer.colors.YELLOW)
+            except ValueError:
+                if typer:
+                    typer.secho(f"Warning: Invalid LLM_SAFETY_MARGIN value: {safety_margin}", fg=typer.colors.YELLOW)
         
         # Output settings  
         if output_dir := os.getenv("OUTPUT_DIR"):

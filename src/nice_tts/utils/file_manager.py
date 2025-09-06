@@ -5,6 +5,7 @@ including path resolution, file discovery, output management, and skip logic.
 """
 
 import os
+import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set
 from dataclasses import dataclass
@@ -18,12 +19,12 @@ from ..core.exceptions import (
     ValidationError
 )
 
+logger = logging.getLogger('nice_tts')
+
 
 class ProcessingStage(Enum):
     """Enumeration of processing stages."""
     TRANSCRIPTION = "transcription"
-    REFINEMENT = "refinement"
-    SUMMARIZATION = "summarization"
 
 
 @dataclass
@@ -63,10 +64,6 @@ class FileInfo:
         existing_stages = set()
         if transcript_path.exists() and transcript_path.stat().st_size > 0:
             existing_stages.add(ProcessingStage.TRANSCRIPTION)
-        if refined_path.exists() and refined_path.stat().st_size > 0:
-            existing_stages.add(ProcessingStage.REFINEMENT)
-        if summary_path.exists() and summary_path.stat().st_size > 0:
-            existing_stages.add(ProcessingStage.SUMMARIZATION)
         
         return cls(
             audio_path=audio_path,
@@ -104,10 +101,6 @@ class FileInfo:
         """
         if stage == ProcessingStage.TRANSCRIPTION:
             return self.transcript_path
-        elif stage == ProcessingStage.REFINEMENT:
-            return self.refined_path
-        elif stage == ProcessingStage.SUMMARIZATION:
-            return self.summary_path
         else:
             raise ValueError(f"Unknown processing stage: {stage}")
     
@@ -122,10 +115,6 @@ class FileInfo:
         """
         if stage == ProcessingStage.TRANSCRIPTION:
             return self.audio_path
-        elif stage == ProcessingStage.REFINEMENT:
-            return self.transcript_path if ProcessingStage.TRANSCRIPTION in self.existing_stages else None
-        elif stage == ProcessingStage.SUMMARIZATION:
-            return self.refined_path if ProcessingStage.REFINEMENT in self.existing_stages else None
         else:
             raise ValueError(f"Unknown processing stage: {stage}")
 
@@ -197,6 +186,11 @@ class FileManager:
                 details={"supported_formats": self.SUPPORTED_AUDIO_EXTENSIONS}
             )
         
+        # Log discovered files
+        logger.info(f"Discovered {len(audio_files)} audio files")
+        for audio_file in audio_files:
+            logger.debug(f"Found audio file: {audio_file}")
+        
         return audio_files
     
     def create_file_info(self, audio_path: Path) -> FileInfo:
@@ -225,6 +219,11 @@ class FileManager:
             List[Dict]: Processing plan with file info and required stages
         """
         plan = []
+        
+        # Handle empty audio files list gracefully
+        if not audio_files:
+            logger.warning("No audio files to process")
+            return plan
         
         for audio_path in audio_files:
             file_info = self.create_file_info(audio_path)
@@ -421,13 +420,5 @@ class FileManager:
         if stage == ProcessingStage.TRANSCRIPTION:
             # Transcription only needs the audio file
             return file_info.audio_path.exists()
-        
-        elif stage == ProcessingStage.REFINEMENT:
-            # Refinement needs transcription to be completed
-            return ProcessingStage.TRANSCRIPTION in file_info.existing_stages
-        
-        elif stage == ProcessingStage.SUMMARIZATION:
-            # Summarization needs refinement to be completed
-            return ProcessingStage.REFINEMENT in file_info.existing_stages
         
         return False

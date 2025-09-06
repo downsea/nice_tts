@@ -12,7 +12,7 @@ import typer
 from ..core.config import get_config
 from ..core.exceptions import ValidationError, ConfigurationError
 from ..engines.transcription.whisper import WhisperEngine
-from ..engines.llm.base import registry as llm_registry
+from ..engines.llm.base import get_registry
 
 
 def validate_input_path(path: Path) -> Path:
@@ -124,14 +124,46 @@ def validate_llm_provider(provider: str) -> str:
     Raises:
         typer.BadParameter: If provider is invalid
     """
-    available_providers = llm_registry.list_engines()
+    # Get registry and ensure providers are loaded
+    registry = get_registry()
+    available_providers = registry.list_engines()
     
     if provider not in available_providers:
-        available = ", ".join(available_providers)
-        raise typer.BadParameter(
-            f"Unsupported LLM provider: {provider}. "
-            f"Available providers: {available}"
-        )
+        import_errors = registry.get_import_errors()
+        
+        error_msg = f"Unsupported LLM provider: {provider}."
+        
+        if available_providers:
+            available = ", ".join(available_providers)
+            error_msg += f" Available providers: {available}."
+        else:
+            error_msg += " No LLM providers are currently available."
+        
+        # 如果用户请求的提供商导入失败，提供具体的错误信息
+        if provider in import_errors:
+            error_msg += f"\n\nNote: '{provider}' provider failed to load due to: {import_errors[provider]}"
+            error_msg += "\nPlease check your environment setup and dependencies."
+            
+            # 提供针对性的修复建议
+            if "anthropic" in str(import_errors[provider]).lower():
+                error_msg += "\nTo use Claude provider, install: pip install anthropic"
+            elif "openai" in str(import_errors[provider]).lower():
+                error_msg += "\nTo use OpenAI provider, install: pip install openai"
+            elif "requests" in str(import_errors[provider]).lower():
+                error_msg += "\nTo use Ollama provider, install: pip install requests"
+        
+        # 如果没有可用提供商，提供更多诊断信息
+        if not available_providers and import_errors:
+            error_msg += "\n\nImport errors for all providers:"
+            for name, error in import_errors.items():
+                if name not in ["_preload", "claude"]:  # Skip internal and removed providers
+                    error_msg += f"\n  - {name}: {error}"
+            
+            # 提供安装建议
+            error_msg += "\n\nTo fix these issues, try:"
+            error_msg += "\n  pip install openai requests transformers"
+        
+        raise typer.BadParameter(error_msg)
     
     return provider
 
@@ -223,21 +255,32 @@ def validate_configuration(config_overrides: Dict[str, Any]) -> None:
         # Load and validate configuration
         config = get_config(cli_overrides=config_overrides)
         
-        # Check required environment variables for LLM
-        if not config.llm.api_key:
-            raise typer.BadParameter(
-                "LLM API key is required. Please set OPENAI_API_KEY in your .env file."
-            )
-        
-        if not config.llm.base_url:
-            raise typer.BadParameter(
-                "LLM base URL is required. Please set OPENAI_API_BASE in your .env file."
-            )
-        
-        if not config.llm.model_name:
-            raise typer.BadParameter(
-                "LLM model name is required. Please set OPENAI_MODEL_NAME in your .env file."
-            )
+        # Check required fields based on LLM provider
+        if config.llm.provider == "ollama":
+            # Ollama only requires model name
+            if not config.llm.model_name:
+                raise typer.BadParameter(
+                    "Ollama model name is required. Please set OLLAMA_MODEL_NAME in your .env file."
+                )
+        else:
+            # OpenAI requires API key
+            if not config.llm.api_key:
+                provider_key = "OPENAI_API_KEY" 
+                raise typer.BadParameter(
+                    f"LLM API key is required. Please set {provider_key} in your .env file."
+                )
+            
+            if not config.llm.base_url:
+                provider_url = "OPENAI_API_BASE"
+                raise typer.BadParameter(
+                    f"LLM base URL is required. Please set {provider_url} in your .env file."
+                )
+            
+            if not config.llm.model_name:
+                provider_model = "OPENAI_MODEL_NAME"
+                raise typer.BadParameter(
+                    f"LLM model name is required. Please set {provider_model} in your .env file."
+                )
         
     except (ValidationError, ConfigurationError) as e:
         raise typer.BadParameter(f"Configuration error: {e}")

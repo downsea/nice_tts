@@ -173,6 +173,30 @@ class TokenLimitError(LLMError):
         
     def __str__(self) -> str:
         return f"{self.message} (Tokens: {self.token_count}/{self.limit})"
+    
+    @classmethod
+    def from_tokenizer_error(cls, original_error: Exception, text_length: int, limit: int) -> "TokenLimitError":
+        """Create TokenLimitError from tokenizer exception.
+        
+        Args:
+            original_error: The original tokenizer exception
+            text_length: Length of the text that caused the error
+            limit: The token limit that was exceeded
+            
+        Returns:
+            TokenLimitError: New exception with context
+        """
+        return cls(
+            f"Token limit exceeded during tokenization: {original_error}",
+            token_count=text_length // 2,  # Rough estimate
+            limit=limit,
+            details={
+                "original_error": str(original_error),
+                "error_type": type(original_error).__name__,
+                "text_length_chars": text_length,
+                "suggested_action": "enable_chunking"
+            }
+        )
 
 
 class NetworkError(NiceTTSError):
@@ -224,6 +248,32 @@ class RetryableError(NiceTTSError):
         base_msg = super().__str__()
         if self.retry_after:
             return f"{base_msg} (Retry after: {self.retry_after}s)"
+        return base_msg
+
+
+class ChunkingError(ProcessingError):
+    """Raised when text chunking fails."""
+    
+    def __init__(self, message: str, text_length: int, max_tokens: int, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, stage="chunking", details=details)
+        self.text_length = text_length
+        self.max_tokens = max_tokens
+        
+    def __str__(self) -> str:
+        return f"{self.message} (Text length: {self.text_length}, Max tokens: {self.max_tokens})"
+
+
+class TokenizerError(LLMError):
+    """Raised when tokenizer operations fail."""
+    
+    def __init__(self, message: str, model_name: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, details=details)
+        self.model_name = model_name
+        
+    def __str__(self) -> str:
+        base_msg = super().__str__()
+        if self.model_name:
+            return f"{base_msg} (Model: {self.model_name})"
         return base_msg
 
 

@@ -1,16 +1,16 @@
-# Nice-TTS: AI-Powered Transcription and Summarization (Chinese Optimized)
+# Nice-TTS: AI-Powered Audio Transcription (Chinese Optimized)
 
-Nice-TTS is a powerful, batch-capable command-line tool that leverages AI to transcribe audio recordings, refine the transcriptions, and generate detailed meeting summaries. It is now optimized by default for **Chinese language** processing.
+Nice-TTS is a powerful, batch-capable command-line tool that leverages AI to transcribe audio recordings. It is now optimized by default for **Chinese language** processing.
 
 ## Features
 
 -   **AI-Powered Transcription**: Uses OpenAI's Whisper models to transcribe audio files. Defaults to Chinese.
--   **Chinese-Optimized LLM Processing**: Refinement and summarization prompts are written in Chinese to provide high-quality, context-aware results for Chinese language audio.
 -   **Batch Processing**: Process a single audio file or all supported audio files in a directory.
 -   **GPU Accelerated**: Automatically uses a CUDA-enabled GPU for transcription if available.
 -   **Smart Processing**: Automatically skips completed steps if an output file is already present.
 -   **Flexible Configuration**: Reads credentials from a local `.env` file or a global `~/.env` file.
 -   **Organized Output**: Saves all generated files into a specified output directory.
+-   **Enhanced M4A Support**: Robust handling of M4A files with automatic validation, repair, and conversion capabilities.
 
 ## Requirements
 
@@ -18,7 +18,6 @@ Nice-TTS is a powerful, batch-capable command-line tool that leverages AI to tra
 -   `uv` for environment and package management (recommended).
 -   `ffmpeg`: Whisper requires `ffmpeg` to be installed on your system.
 -   For GPU acceleration, a CUDA-enabled NVIDIA GPU with the appropriate drivers.
--   Access to an OpenAI-compatible LLM API with an API key.
 
 ## Installation
 
@@ -64,14 +63,14 @@ nice-tts check-gpu
 
 ## Configuration
 
-The tool needs API credentials for an LLM. It checks for a `.env` file in the current directory, then in your home directory (`~/.env`).
+The tool can read configuration from a `.env` file in the current directory, then in your home directory (`~/.env`).
 
 -   Copy the example file: `cp .env.example .env`
--   Edit the `.env` file with your details (API key, base URL, model name).
+-   Edit the `.env` file with your details (optional settings).
 
 ## Usage
 
-The main command is `process`. By default, it assumes the audio is Chinese (`--language zh`) and will produce a Chinese refined transcript and summary.
+The main command is `process`. By default, it assumes the audio is Chinese (`--language zh`).
 
 ### Processing Chinese Audio (Default)
 ```bash
@@ -84,11 +83,22 @@ nice-tts process /path/to/recordings_folder/ --output-dir chinese_results
 
 ### Processing English Audio
 
-You can still process other languages by specifying the language code. Note that the LLM prompts are optimized for Chinese, so results in other languages may vary.
+You can still process other languages by specifying the language code.
 
 ```bash
 nice-tts process /path/to/english_meeting.wav --language en
 ```
+
+### M4A File Support
+
+Nice-TTS now includes robust support for M4A audio files with automatic validation and repair capabilities:
+
+- **Automatic Validation**: M4A files are validated before processing to detect issues
+- **Smart Repair**: Corrupted or problematic M4A files are automatically repaired
+- **Fallback Conversion**: Files that cannot be repaired are converted to WAV format
+- **ZeroDivisionError Prevention**: Special handling for common M4A processing errors
+
+The system works transparently with all existing commands - simply process your M4A files as you would any other audio format.
 
 For all options, run `nice-tts --help`.
 

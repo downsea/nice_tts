@@ -4,6 +4,7 @@ This module provides a Whisper-based transcription engine that supports
 GPU acceleration and various model sizes.
 """
 
+import re
 import time
 import torch
 import whisper
@@ -17,8 +18,22 @@ from ...core.exceptions import (
     ModelNotFoundError,
     TranscriptionFailureError,
     DeviceError,
-    AudioProcessingError
+    AudioProcessingError,
+    AudioCorruptedError
 )
+
+# Import M4A utilities
+try:
+    from ...utils.m4a_validator import M4AValidator
+    from ...utils.m4a_preprocessor import M4APreprocessor
+    M4A_SUPPORT_AVAILABLE = True
+except ImportError:
+    M4A_SUPPORT_AVAILABLE = False
+    M4AValidator = None
+    M4APreprocessor = None
+
+import logging
+logger = logging.getLogger('nice_tts')
 
 
 class WhisperEngine(TranscriptionEngine):
@@ -63,54 +78,213 @@ class WhisperEngine(TranscriptionEngine):
         # Validate input
         self.validate_audio_file(audio_path)
         
-        # Ensure model is loaded
-        if not self.is_model_loaded():
-            self.load_model()
-        
-        start_time = time.time()
+        # Preprocess M4A files if needed
+        processed_audio_path = audio_path
+        temp_files_to_cleanup = []
         
         try:
-            # Prepare transcription options
-            options = self._get_transcription_options()
+            # Special handling for M4A files
+            if audio_path.suffix.lower() == '.m4a' and M4A_SUPPORT_AVAILABLE:
+                processed_audio_path = self._handle_m4a_file(audio_path)
+                if processed_audio_path != audio_path:
+                    temp_files_to_cleanup.append(processed_audio_path)
             
-            # Perform transcription
-            result = self._model.transcribe(str(audio_path), **options)
+            # Ensure model is loaded
+            if not self.is_model_loaded():
+                self.load_model()
             
-            processing_time = time.time() - start_time
+            start_time = time.time()
             
-            # Extract transcription text
-            text = result.get("text", "").strip()
-            language = result.get("language", self.config.language)
+            try:
+                # Prepare transcription options
+                options = self._get_transcription_options()
+                
+                # Perform transcription with enhanced error handling
+                result = self._safe_transcribe(str(processed_audio_path), **options)
+                
+                processing_time = time.time() - start_time
+                
+                # Extract transcription text
+                raw_text = result.get("text", "").strip()
+                language = result.get("language", self.config.language)
+                
+                # Get segments for formatting
+                segments = result.get("segments", [])
+                
+                # Format the transcript text based on config
+                if self.config.format_output:
+                    if self.config.line_break_mode == "segment":
+                        # Use segment-based formatting
+                        formatted_text = self.format_transcript_text(segments, raw_text)
+                    else:
+                        # Use sentence-based formatting (default)
+                        formatted_text = self._format_from_raw_text(raw_text)
+                else:
+                    # No formatting, use raw text
+                    formatted_text = raw_text
+                
+                # Calculate confidence (Whisper doesn't provide per-text confidence)
+                confidence = self._calculate_confidence(segments)
+                
+                return TranscriptionResult(
+                    text=formatted_text,
+                    language=language,
+                    confidence=confidence,
+                    processing_time=processing_time,
+                    segments=segments,
+                    metadata={
+                        "model": self.config.model_name,
+                        "device": str(self._device),
+                        "audio_duration": result.get("duration", 0),
+                        "temperature": self.config.temperature,
+                        "raw_text": raw_text,  # Keep original for reference
+                        "original_file": str(audio_path),
+                        "processed_file": str(processed_audio_path)
+                    }
+                )
+                
+            except Exception as e:
+                processing_time = time.time() - start_time
+                raise TranscriptionFailureError(
+                    f"Whisper transcription failed: {e}",
+                    model_name=self.config.model_name,
+                    details={
+                        "audio_path": str(audio_path),
+                        "processed_path": str(processed_audio_path),
+                        "processing_time": processing_time,
+                        "error_type": type(e).__name__
+                    }
+                ) from e
+                
+        finally:
+            # Clean up temporary files
+            for temp_file in temp_files_to_cleanup:
+                try:
+                    if temp_file.exists():
+                        temp_file.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temporary file {temp_file}: {e}")
+    
+    def _handle_m4a_file(self, audio_path: Path) -> Path:
+        """Handle M4A file with validation and preprocessing.
+        
+        Args:
+            audio_path: Path to the M4A file
             
-            # Calculate confidence (Whisper doesn't provide per-text confidence)
-            segments = result.get("segments", [])
-            confidence = self._calculate_confidence(segments)
+        Returns:
+            Path: Path to the file to use for transcription (may be preprocessed)
+        """
+        if not M4A_SUPPORT_AVAILABLE:
+            logger.warning("M4A support not available - processing with default Whisper")
+            return audio_path
+        
+        # Validate the M4A file
+        logger.debug(f"Validating M4A file: {audio_path}")
+        validation_result = M4AValidator.validate_m4a(audio_path)
+        
+        if validation_result.is_valid:
+            logger.debug(f"M4A file {audio_path} is valid, proceeding with normal processing")
+            return audio_path
+        
+        # Log validation issues
+        logger.warning(f"M4A file {audio_path} validation issues: {validation_result.issues}")
+        
+        # Handle based on validation result
+        if not validation_result.can_be_processed:
+            # Try to repair the file
+            logger.info(f"Attempting to repair M4A file: {audio_path}")
+            repaired_path = M4APreprocessor.create_temp_repaired_file(audio_path)
+            if repaired_path and repaired_path.exists():
+                # Validate the repaired file
+                repair_validation = M4AValidator.validate_m4a(repaired_path)
+                if repair_validation.is_valid or repair_validation.can_be_processed:
+                    logger.info(f"Successfully repaired M4A file: {audio_path}")
+                    return repaired_path
+                else:
+                    logger.warning(f"Repaired M4A file still has issues: {repair_validation.issues}")
             
-            return TranscriptionResult(
-                text=text,
-                language=language,
-                confidence=confidence,
-                processing_time=processing_time,
-                segments=segments,
-                metadata={
-                    "model": self.config.model_name,
-                    "device": str(self._device),
-                    "audio_duration": result.get("duration", 0),
-                    "temperature": self.config.temperature
-                }
-            )
+            # If repair failed, try conversion to WAV
+            logger.info(f"Converting M4A to WAV as fallback: {audio_path}")
+            wav_path = M4APreprocessor.create_temp_wav_file(audio_path)
+            if wav_path and wav_path.exists():
+                logger.info(f"Successfully converted M4A to WAV: {audio_path}")
+                return wav_path
+            else:
+                # If all else fails, raise an error
+                raise AudioCorruptedError(
+                    f"M4A file is corrupted and cannot be processed: {audio_path}",
+                    audio_path=str(audio_path)
+                )
+        else:
+            # File can be processed but has issues, try preprocessing
+            logger.info(f"Preprocessing M4A file to fix issues: {audio_path}")
+            repaired_path = M4APreprocessor.create_temp_repaired_file(audio_path)
+            if repaired_path and repaired_path.exists():
+                return repaired_path
+            else:
+                # Fall back to original file
+                logger.warning(f"Could not preprocess M4A file, using original: {audio_path}")
+                return audio_path
+    
+    def _safe_transcribe(self, audio_path: str, **options) -> Dict[str, Any]:
+        """Perform transcription with enhanced error handling.
+        
+        Args:
+            audio_path: Path to audio file
+            **options: Transcription options
             
-        except Exception as e:
-            processing_time = time.time() - start_time
+        Returns:
+            Dict: Transcription result
+            
+        Raises:
+            TranscriptionFailureError: If transcription fails
+        """
+        try:
+            result = self._model.transcribe(audio_path, **options)
+            return result
+        except ZeroDivisionError as e:
+            # Handle the specific ZeroDivisionError for M4A files
+            logger.error(f"ZeroDivisionError during transcription of {audio_path}: {e}")
+            
+            # If this is an M4A file, provide specific handling
+            if audio_path.lower().endswith('.m4a'):
+                logger.info(f"Attempting to handle ZeroDivisionError for M4A file: {audio_path}")
+                # Try to convert to WAV and retry
+                if M4A_SUPPORT_AVAILABLE:
+                    try:
+                        wav_path = M4APreprocessor.create_temp_wav_file(Path(audio_path))
+                        if wav_path and wav_path.exists():
+                            logger.info(f"Retrying transcription with WAV conversion: {wav_path}")
+                            try:
+                                result = self._model.transcribe(str(wav_path), **options)
+                                # Clean up temporary file
+                                try:
+                                    wav_path.unlink()
+                                except Exception:
+                                    pass
+                                return result
+                            except Exception as retry_e:
+                                logger.error(f"Retry with WAV conversion also failed: {retry_e}")
+                                # Clean up temporary file
+                                try:
+                                    wav_path.unlink()
+                                except Exception:
+                                    pass
+                                raise TranscriptionFailureError(
+                                    f"Transcription failed after WAV conversion retry: {retry_e}",
+                                    model_name=self.config.model_name
+                                ) from retry_e
+                    except Exception as conversion_error:
+                        logger.error(f"Failed to convert M4A to WAV: {conversion_error}")
+            
+            # If we get here, re-raise the original error
             raise TranscriptionFailureError(
-                f"Whisper transcription failed: {e}",
-                model_name=self.config.model_name,
-                details={
-                    "audio_path": str(audio_path),
-                    "processing_time": processing_time,
-                    "error_type": type(e).__name__
-                }
+                f"ZeroDivisionError during transcription: {e}",
+                model_name=self.config.model_name
             ) from e
+        except Exception as e:
+            # Re-raise other exceptions
+            raise e
     
     def supports_language(self, language: str) -> bool:
         """Check if Whisper supports a specific language."""
@@ -286,6 +460,85 @@ class WhisperEngine(TranscriptionEngine):
                 info["devices"].append(device_info)
         
         return info
+    
+    def _format_from_raw_text(self, text: str) -> str:
+        """Enhanced sentence-based formatting for Chinese text.
+        
+        Args:
+            text: Raw transcript text
+            
+        Returns:
+            str: Formatted text with improved sentence boundaries
+        """
+        import re
+        
+        # Clean up the text first
+        text = text.strip()
+        if not text:
+            return ""
+        
+        # Enhanced Chinese sentence splitting pattern
+        # Include various Chinese punctuation marks and western equivalents
+        sentence_endings = r'([。！？；.!?;](?:["''""\)\]]*)?\s*)'
+        
+        # Split while preserving delimiters
+        parts = re.split(sentence_endings, text)
+        
+        sentences = []
+        current_sentence = ""
+        
+        for i, part in enumerate(parts):
+            if not part.strip():
+                continue
+                
+            # Check if this part is a sentence ending
+            if re.match(sentence_endings, part):
+                current_sentence += part
+                # Clean up the sentence
+                clean_sentence = self._clean_sentence(current_sentence)
+                if clean_sentence:
+                    sentences.append(clean_sentence)
+                current_sentence = ""
+            else:
+                current_sentence += part
+        
+        # Handle any remaining text
+        if current_sentence.strip():
+            clean_sentence = self._clean_sentence(current_sentence)
+            if clean_sentence:
+                sentences.append(clean_sentence)
+        
+        return "\n".join(sentences)
+    
+    def _clean_sentence(self, sentence: str) -> str:
+        """Clean up individual sentences.
+        
+        Args:
+            sentence: Raw sentence text
+            
+        Returns:
+            str: Cleaned sentence
+        """
+        # Remove extra whitespace
+        sentence = re.sub(r'\s+', ' ', sentence)
+        
+        # Remove leading/trailing whitespace
+        sentence = sentence.strip()
+        
+        # Remove common speech disfluencies and filler words
+        fillers = ['嗯', '呃', '啊', '呀', '哦', '额', '那个', '这个', '就是说', '然后']
+        
+        # Only remove fillers at the beginning of sentences or when isolated
+        for filler in fillers:
+            # Remove at start of sentence
+            pattern = rf'^{re.escape(filler)}[，,\s]*'
+            sentence = re.sub(pattern, '', sentence)
+            
+            # Remove when isolated with punctuation
+            pattern = rf'[，,\s]+{re.escape(filler)}[，,\s]+'
+            sentence = re.sub(pattern, '，', sentence)
+        
+        return sentence
 
 
 # Register the Whisper engine

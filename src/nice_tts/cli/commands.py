@@ -17,11 +17,12 @@ from .validators import (
     validate_language, validate_llm_provider, validate_parallel_jobs,
     validate_config_file, validate_log_level, validate_configuration
 )
+from .config_commands import config_app
 from ..core.config import get_config, config_service
 from ..core.pipeline import ProcessingPipeline
 from ..core.exceptions import NiceTTSError, FatalError
 from ..engines.transcription.whisper import WhisperEngine
-from ..engines.llm.base import registry as llm_registry
+from ..engines.llm.base import get_registry
 from ..utils.logger import setup_logging, ProgressInfo
 
 
@@ -108,13 +109,11 @@ def process(
         metavar="FILE"
     )
 ) -> None:
-    """Process audio files through transcription, refinement, and summarization.
+    """Process audio files through transcription.
     
-    This command processes audio files through a three-stage pipeline:
+    This command processes audio files through transcription stage:
     
     1. **Transcription**: Convert audio to text using Whisper
-    2. **Refinement**: Clean and improve transcribed text using LLM
-    3. **Summarization**: Generate structured meeting notes in Markdown
     
     The tool automatically skips stages that have already been completed,
     unless --force is specified.
@@ -171,17 +170,26 @@ def process(
         pipeline = ProcessingPipeline(config)
         
         def progress_callback(progress: ProgressInfo) -> None:
-            """Handle progress updates."""
+            """Handle progress updates with enhanced information."""
             if verbose:
                 # Detailed progress in verbose mode
+                eta_info = ""
+                if progress.eta > 0:
+                    eta_minutes = int(progress.eta // 60)
+                    eta_seconds = int(progress.eta % 60)
+                    eta_info = f" - ETA: {eta_minutes:02d}:{eta_seconds:02d}"
+                
                 typer.echo(
                     f"Progress: {progress.current}/{progress.total} "
-                    f"({progress.percentage:.1f}%) - {progress.stage}"
+                    f"({progress.percentage:.1f}%) - {progress.stage}{eta_info}"
                 )
         
         # Process files
         with logger.performance_timer("batch_processing", input_path=str(input_path)):
             result = pipeline.process_batch(input_path, progress_callback)
+        
+        # Clear any remaining progress display
+        pipeline.progress_reporter.clear_progress()
         
         # Display results
         _display_results(result)
@@ -299,10 +307,12 @@ def list_models() -> None:
     
     # LLM providers
     typer.secho("\nLLM Providers:", fg=typer.colors.BLUE, bold=True)
-    providers = llm_registry.list_engines()
+    providers = get_registry().list_engines()
     for provider in providers:
         if provider == "openai":
             typer.echo(f"  ✅ {provider} (fully supported)")
+        elif provider == "ollama":
+            typer.echo(f"  🦙 {provider} (local models)")
         else:
             typer.echo(f"  🚧 {provider} (experimental)")
     
@@ -312,184 +322,124 @@ def list_models() -> None:
     typer.echo(f"  {formats}")
 
 
-@app.command()
-def config(
-    action: str = typer.Argument(
-        ...,
-        help="Action to perform: show, validate, init"
-    ),
-    config_file: Optional[Path] = typer.Option(
-        None,
-        "--file", "-f",
-        help="Configuration file path",
-        callback=validate_config_file
-    )
-) -> None:
-    """Configuration management commands.
-    
-    **Actions:**
-    
-    - **show**: Display current configuration
-    - **validate**: Validate configuration without processing
-    - **init**: Create a sample configuration file
-    
-    **Examples:**
-    
-        # Show current configuration
-        nice-tts config show
-        
-        # Validate specific config file
-        nice-tts config validate --file .env.production
-        
-        # Create sample configuration
-        nice-tts config init
-    """
-    if action == "show":
-        _show_config(config_file)
-    elif action == "validate":
-        _validate_config(config_file)
-    elif action == "init":
-        _init_config(config_file)
-    else:
-        typer.secho(
-            f"❌ Unknown action: {action}. Use: show, validate, or init",
-            fg=typer.colors.RED,
-            err=True
-        )
-        raise typer.Exit(1)
+# Add config subcommand
+app.add_typer(config_app, name="config")
 
 
 def _display_startup_info(config, input_path: Path) -> None:
-    """Display startup information."""
+    """Display enhanced startup information with better visual appeal."""
+    # Enhanced startup display with visual separators and better formatting
     typer.secho("🎙️  Nice-TTS Audio Processing Pipeline", fg=typer.colors.CYAN, bold=True)
-    typer.echo(f"Input: {input_path}")
-    typer.echo(f"Output: {config.output.directory}")
-    typer.echo(f"Transcription: {config.transcription.model_name} ({config.transcription.language})")
-    typer.echo(f"LLM Provider: {config.llm.provider}")
+    typer.secho("═══════════════════════════════════════════════════════════════════════════════", fg=typer.colors.CYAN)
     
+    # Input/Output information
+    typer.echo(f"📁 Input:     {input_path}")
+    typer.echo(f"📂 Output:    {config.output.directory}")
+    
+    # Transcription information
+    typer.echo(f"🗣️  Transcription: {config.transcription.model_name} ({config.transcription.language}) on {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+    
+    # Parallel processing information
     if config.parallel_jobs > 1:
-        typer.echo(f"Parallel Jobs: {config.parallel_jobs}")
+        typer.echo(f"⚡ Parallel Jobs: {config.parallel_jobs}")
+    else:
+        typer.echo("⚡ Parallel Jobs: 1 (sequential)")
     
+    # Force reprocessing information
     if config.output.force_reprocess:
-        typer.secho("🔄 Force reprocessing enabled", fg=typer.colors.YELLOW)
+        typer.secho("🔄 Force Reprocess: Yes", fg=typer.colors.YELLOW)
+    else:
+        typer.echo("🔄 Force Reprocess: No")
+    
+    # Environment configuration section
+    typer.echo("")
+    typer.secho("[Environment Configuration]", fg=typer.colors.BLUE)
+    
+    # API configuration (masked for security)
+    if hasattr(config.llm, 'api_key') and config.llm.api_key:
+        masked_key = config.llm.api_key[-8:] if len(config.llm.api_key) > 8 else config.llm.api_key
+        typer.echo(f"🔑 API Key:   ****************{masked_key}")
+    
+    if hasattr(config.llm, 'api_base') and config.llm.api_base:
+        typer.echo(f"🌐 API Base:  {config.llm.api_base}")
+    
+    if hasattr(config.llm, 'model') and config.llm.model:
+        typer.echo(f"🤖 Model:     {config.llm.model}")
     
     typer.echo()
 
 
 def _display_results(result) -> None:
-    """Display processing results."""
-    typer.echo("\n" + "="*50)
+    """Display enhanced processing results with better formatting and detailed error information."""
+    # Enhanced results summary with visual separators
+    typer.echo()
+    typer.secho("═══════════════════════════════════════════════════════════════════════════════", fg=typer.colors.CYAN)
     typer.secho("📊 Processing Results", fg=typer.colors.CYAN, bold=True)
-    typer.echo("="*50)
+    typer.secho("═══════════════════════════════════════════════════════════════════════════════", fg=typer.colors.CYAN)
     
-    typer.echo(f"Total Files: {result.total_files}")
-    typer.secho(f"✅ Successful: {result.successful_files}", fg=typer.colors.GREEN)
+    # Statistics - protect against division by zero
+    success_rate = (result.successful_files / result.total_files * 100) if result.total_files > 0 else 0
     
+    typer.echo(f"✅ Successful: {result.successful_files} files ({success_rate:.1f}%)")
     if result.failed_files > 0:
-        typer.secho(f"❌ Failed: {result.failed_files}", fg=typer.colors.RED)
-    
-    typer.echo(f"⏱️  Total Time: {result.total_processing_time:.2f}s")
+        typer.secho(f"❌ Failed:     {result.failed_files} files ({100-success_rate:.1f}%)", fg=typer.colors.RED)
+    typer.echo(f"⏱️  Total Time: {int(result.total_processing_time // 60)}m {result.total_processing_time % 60:.1f}s")
     
     if result.total_files > 0:
         avg_time = result.total_processing_time / result.total_files
-        typer.echo(f"📈 Average Time per File: {avg_time:.2f}s")
-
-
-def _show_config(config_file: Optional[Path]) -> None:
-    """Show current configuration."""
-    try:
-        config = get_config(config_file)
-        
-        typer.secho("📋 Current Configuration\n", fg=typer.colors.CYAN, bold=True)
-        
-        # Transcription settings
-        typer.secho("Transcription:", fg=typer.colors.BLUE, bold=True)
-        typer.echo(f"  Model: {config.transcription.model_name}")
-        typer.echo(f"  Language: {config.transcription.language}")
-        typer.echo(f"  Device: {config.transcription.device}")
-        
-        # LLM settings
-        typer.secho("\nLLM:", fg=typer.colors.BLUE, bold=True)
-        typer.echo(f"  Provider: {config.llm.provider}")
-        typer.echo(f"  Model: {config.llm.model_name or 'Not set'}")
-        typer.echo(f"  Base URL: {config.llm.base_url or 'Not set'}")
-        typer.echo(f"  Max Tokens: {config.llm.max_tokens}")
-        
-        # Output settings
-        typer.secho("\nOutput:", fg=typer.colors.BLUE, bold=True)
-        typer.echo(f"  Directory: {config.output.directory}")
-        typer.echo(f"  Force Reprocess: {config.output.force_reprocess}")
-        
-        # Global settings
-        typer.secho("\nGlobal:", fg=typer.colors.BLUE, bold=True)
-        typer.echo(f"  Parallel Jobs: {config.parallel_jobs}")
-        typer.echo(f"  Log Level: {config.logging.level}")
-        
-    except Exception as e:
-        typer.secho(f"❌ Error loading configuration: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
-
-
-def _validate_config(config_file: Optional[Path]) -> None:
-    """Validate configuration."""
-    try:
-        config = get_config(config_file)
-        config_service.validate_config(config)
-        
-        typer.secho("✅ Configuration is valid", fg=typer.colors.GREEN)
-        
-    except Exception as e:
-        typer.secho(f"❌ Configuration validation failed: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
-
-
-def _init_config(config_file: Optional[Path]) -> None:
-    """Initialize sample configuration."""
-    config_path = config_file or Path(".env")
+        typer.echo(f"📈 Average Time per File: {avg_time:.1f}s")
     
-    if config_path.exists():
-        if not typer.confirm(f"Configuration file {config_path} already exists. Overwrite?"):
-            typer.secho("Configuration initialization cancelled", fg=typer.colors.YELLOW)
-            return
+    # Detailed breakdown sections
+    if result.successful_files > 0:
+        typer.echo()
+        typer.secho("[Successes]", fg=typer.colors.GREEN, bold=True)
+        successful_results = [r for r in result.files_processed if r.success]
+        for res in successful_results:
+            # Display file and output path
+            typer.echo(f"📁 {res.file_info.audio_path.name} → {res.stages_completed[-1].output_path if res.stages_completed and res.stages_completed[-1].output_path else 'N/A'}")
+            
+            # Display stage timing information
+            stage_info = []
+            for stage_result in res.stages_completed:
+                stage_info.append(f"{stage_result.stage.value}: {stage_result.processing_time:.1f}s")
+            
+            if stage_info:
+                typer.echo(f"   🕐 {', '.join(stage_info)}")
     
-    sample_config = """# Nice-TTS Configuration File
-
-# OpenAI/LLM Settings (Required)
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_API_BASE=https://api.openai.com/v1
-OPENAI_MODEL_NAME=gpt-4-turbo-preview
-
-# LLM Provider (openai, claude)
-LLM_PROVIDER=openai
-
-# Transcription Settings
-WHISPER_MODEL=large-v3-turbo
-WHISPER_LANGUAGE=zh
-WHISPER_DEVICE=auto
-
-# Output Settings
-OUTPUT_DIR=output
-FORCE_REPROCESS=false
-
-# Logging Settings
-LOG_LEVEL=INFO
-# LOG_FILE=nice-tts.log
-
-# Performance Settings
-PARALLEL_JOBS=1
-"""
-    
-    try:
-        with open(config_path, 'w', encoding='utf-8') as f:
-            f.write(sample_config)
-        
-        typer.secho(f"✅ Sample configuration created: {config_path}", fg=typer.colors.GREEN)
-        typer.secho("📝 Edit the file and add your API keys before running", fg=typer.colors.BLUE)
-        
-    except Exception as e:
-        typer.secho(f"❌ Failed to create configuration: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1)
-
-
+    if result.failed_files > 0:
+        typer.echo()
+        typer.secho("[Failures]", fg=typer.colors.RED, bold=True)
+        failed_results = [r for r in result.files_processed if not r.success]
+        for res in failed_results:
+            typer.echo(f"📁 {res.file_info.audio_path.name}")
+            
+            if res.error:
+                # Try to get more specific error information
+                error_msg = str(res.error)
+                error_type = type(res.error).__name__
+                
+                # Determine stage and details from error
+                stage = "Unknown"
+                details = ""
+                
+                if hasattr(res.error, 'stage'):
+                    stage = getattr(res.error, 'stage', 'Unknown')
+                elif res.stages_completed:
+                    # Get the last stage that was attempted
+                    last_stage = next((s for s in reversed(res.stages_completed) if not s.success), None)
+                    if last_stage:
+                        stage = last_stage.stage.value
+                
+                # Get error details
+                if hasattr(res.error, 'details'):
+                    error_details = getattr(res.error, 'details', {})
+                    if error_details:
+                        details = ", ".join([f"{k}: {v}" for k, v in error_details.items()])
+                
+                typer.secho(f"   Error: {error_type} - {error_msg}", fg=typer.colors.RED)
+                typer.secho(f"   Stage: {stage}", fg=typer.colors.RED)
+                if details:
+                    typer.secho(f"   Details: {details}", fg=typer.colors.RED)
+            typer.echo()
 if __name__ == "__main__":
     app()

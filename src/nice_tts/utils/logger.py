@@ -59,13 +59,21 @@ class ProgressInfo:
     @property
     def eta(self) -> float:
         """Estimate time to completion."""
-        if self.current == 0 or self.start_time is None:
+        if self.current == 0 or self.start_time is None or self.total == 0:
             return 0.0
         
         elapsed = self.elapsed_time
+        # Avoid division by zero
+        if elapsed == 0:
+            return 0.0
+            
         rate = self.current / elapsed
         remaining = self.total - self.current
         
+        # Avoid division by zero
+        if rate <= 0:
+            return 0.0
+            
         return remaining / rate if rate > 0 else 0.0
 
 
@@ -453,7 +461,7 @@ class ProgressReporter:
             self._show_progress_bar(progress)
     
     def _show_progress_bar(self, progress: ProgressInfo) -> None:
-        """Show visual progress bar in console."""
+        """Show enhanced visual progress bar in console with ETA and stage info."""
         if not sys.stderr.isatty():
             return  # Don't show progress bar in non-interactive mode
         
@@ -465,18 +473,26 @@ class ProgressReporter:
         if self._last_progress_line:
             sys.stderr.write("\r" + " " * len(self._last_progress_line) + "\r")
         
-        # Create progress line
-        line = f"{bar} {progress.percentage:5.1f}% ({progress.current}/{progress.total})"
+        # Create progress line with enhanced information
+        line = f"Processing Files: [{bar}] {progress.percentage:5.1f}% ({progress.current}/{progress.total})"
         
-        if progress.stage:
-            line += f" {progress.stage}"
-        
+        # Add current file information if available
         if progress.file_name:
             # Truncate long filenames
             display_name = progress.file_name
             if len(display_name) > 30:
                 display_name = "..." + display_name[-27:]
-            line += f" - {display_name}"
+            line += f"\nCurrent File: {display_name}"
+        
+        # Add stage information
+        if progress.stage and progress.stage != "processing":
+            line += f"\nStage: {progress.stage}"
+            
+            # Add ETA if available
+            if progress.eta > 0:
+                eta_minutes = int(progress.eta // 60)
+                eta_seconds = int(progress.eta % 60)
+                line += f" - ETA: {eta_minutes:02d}:{eta_seconds:02d}"
         
         # Add color if enabled
         if self.use_colors:

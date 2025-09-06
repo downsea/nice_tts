@@ -8,13 +8,20 @@ env/
 venv/
 .env
 .venv
+.pytest_cache/
 
 # Build artifacts
 dist/
 build/
 *.egg-info/
 test/
+tests/
+output/
 
 # IDEs
 .idea/
 .vscode/
+.qoder/
+.claude/
+
+matex5/

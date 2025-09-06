@@ -13,11 +13,11 @@ from datetime import datetime
 from openai import OpenAI
 from transformers import AutoTokenizer
 
-from .base import LLMEngine, RefinementResult, SummaryResult, registry
+from .base import LLMEngine, RefinementResult, SummaryResult, get_registry
 from ...core.config import LLMConfig
 from ...core.exceptions import (
     APIError, APIAuthenticationError, APIRateLimitError, APIQuotaExceededError,
-    TokenLimitError, NetworkError, TimeoutError as NiceTTSTimeoutError
+    TokenLimitError, TokenizerError, ChunkingError, NetworkError, TimeoutError as NiceTTSTimeoutError
 )
 
 
@@ -55,41 +55,65 @@ class OpenAIProvider(LLMEngine):
         
         start_time = time.time()
         
-        # Split text into manageable chunks
-        chunks = self.chunk_text(text, max_tokens=self.config.max_tokens - 2000)  # Reserve tokens for prompt
-        
-        refined_chunks = []
-        total_tokens = 0
-        
-        for i, chunk in enumerate(chunks):
-            try:
-                refined_chunk, tokens_used = self._refine_chunk(chunk, i + 1, len(chunks))
-                refined_chunks.append(refined_chunk)
-                total_tokens += tokens_used
-                
-            except Exception as e:
-                processing_time = time.time() - start_time
-                raise self._handle_api_error(e, context={
-                    "operation": "refine_text",
-                    "chunk_index": i,
-                    "total_chunks": len(chunks),
-                    "processing_time": processing_time
-                })
-        
-        processing_time = time.time() - start_time
-        refined_text = "\n\n".join(refined_chunks)
-        
-        return RefinementResult(
-            refined_text=refined_text,
-            chunks_processed=len(chunks),
-            tokens_used=total_tokens,
-            processing_time=processing_time,
-            metadata={
-                "model": self.config.model_name,
-                "provider": "openai",
-                "temperature": self.config.temperature
-            }
-        )
+        try:
+            # Use improved chunking with safety checks
+            chunks = self._safe_chunk_text(text, reserve_tokens=2000)  # Reserve for prompt
+            
+            refined_chunks = []
+            total_tokens = 0
+            
+            for i, chunk in enumerate(chunks):
+                try:
+                    refined_chunk, tokens_used = self._refine_chunk(chunk, i + 1, len(chunks))
+                    refined_chunks.append(refined_chunk)
+                    total_tokens += tokens_used
+                    
+                except Exception as e:
+                    processing_time = time.time() - start_time
+                    
+                    # Check if it's a token limit error
+                    if "maximum sequence length" in str(e).lower() or "token" in str(e).lower():
+                        # Try with smaller chunk
+                        smaller_chunks = self._emergency_split_chunk(chunk)
+                        for sub_chunk in smaller_chunks:
+                            try:
+                                refined_sub_chunk, sub_tokens = self._refine_chunk(
+                                    sub_chunk, i + 1, len(chunks), emergency=True
+                                )
+                                refined_chunks.append(refined_sub_chunk)
+                                total_tokens += sub_tokens
+                            except Exception as sub_e:
+                                # Final fallback: return chunk as-is with warning
+                                refined_chunks.append(f"[处理失败，保留原文]: {sub_chunk}")
+                    else:
+                        raise self._handle_api_error(e, context={
+                            "operation": "refine_text",
+                            "chunk_index": i,
+                            "total_chunks": len(chunks),
+                            "processing_time": processing_time
+                        })
+            
+            processing_time = time.time() - start_time
+            refined_text = "\n\n".join(refined_chunks)
+            
+            return RefinementResult(
+                refined_text=refined_text,
+                chunks_processed=len(chunks),
+                tokens_used=total_tokens,
+                processing_time=processing_time,
+                metadata={
+                    "model": self.config.model_name,
+                    "provider": "openai",
+                    "temperature": self.config.temperature
+                }
+            )
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            raise self._handle_api_error(e, context={
+                "operation": "refine_text",
+                "processing_time": processing_time
+            })
     
     def summarize_text(
         self,
@@ -161,11 +185,34 @@ class OpenAIProvider(LLMEngine):
         if not self._tokenizer:
             self._setup_tokenizer()
         
+        # For safety, limit text length to prevent tokenizer errors
+        # If text is extremely long, use character-based estimation
+        if len(text) > 50000:  # 50K characters threshold
+            return self._estimate_tokens_by_chars(text)
+        
         try:
-            return len(self._tokenizer.encode(text))
-        except Exception:
-            # Fallback: rough estimation (1 token ≈ 4 characters for most models)
-            return len(text) // 4
+            # Ensure tokenizer can handle the text length
+            if hasattr(self._tokenizer, 'model_max_length'):
+                max_length = getattr(self._tokenizer, 'model_max_length', 512)
+                if max_length and max_length < 2048:  # Avoid small limits like GPT-2's 1024
+                    return self._estimate_tokens_by_chars(text)
+                    
+            return len(self._tokenizer.encode(text, add_special_tokens=False, truncation=False))
+        except Exception as e:
+            # Handle tokenizer-specific errors
+            if "maximum sequence length" in str(e).lower() or "exceeds the maximum" in str(e).lower():
+                # This is a tokenizer length limit error
+                raise TokenLimitError.from_tokenizer_error(e, len(text), 1024)
+            elif "model" in str(e).lower() and "not found" in str(e).lower():
+                # Tokenizer model loading error
+                raise TokenizerError(
+                    f"Failed to load tokenizer model: {e}",
+                    model_name=self.config.model_name,
+                    details={"error_type": type(e).__name__, "original_error": str(e)}
+                )
+            else:
+                # Fallback: accurate estimation based on text characteristics
+                return self._estimate_tokens_by_chars(text)
     
     def get_max_tokens(self) -> int:
         """Get maximum token limit."""
@@ -212,26 +259,32 @@ class OpenAIProvider(LLMEngine):
             self._tokenizer = AutoTokenizer.from_pretrained(self.config.model_name)
         except Exception:
             try:
-                # Fallback to GPT-2 tokenizer
-                self._tokenizer = AutoTokenizer.from_pretrained("gpt2")
+                # Use cl100k_base tokenizer for OpenAI models (GPT-4, GPT-3.5-turbo)
+                # This tokenizer supports much longer sequences and is more accurate
+                self._tokenizer = AutoTokenizer.from_pretrained("Xenova/gpt-4")
             except Exception:
-                # Final fallback: None (will use character-based estimation)
-                self._tokenizer = None
+                try:
+                    # Second fallback: Use a more modern tokenizer
+                    self._tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
+                except Exception:
+                    # Final fallback: None (will use character-based estimation)
+                    self._tokenizer = None
     
-    def _refine_chunk(self, chunk: str, chunk_num: int, total_chunks: int) -> tuple[str, int]:
+    def _refine_chunk(self, chunk: str, chunk_num: int, total_chunks: int, emergency: bool = False) -> tuple[str, int]:
         """Refine a single text chunk.
         
         Args:
             chunk: Text chunk to refine
             chunk_num: Current chunk number (1-based)
             total_chunks: Total number of chunks
+            emergency: Whether this is an emergency retry with smaller limits
             
         Returns:
             Tuple of (refined_text, tokens_used)
         """
         system_prompt = "你是一位专业的速记稿后期处理专家，请使用中文输出。"
         
-        user_prompt = f"""您是一位专业的速记稿后期处理专家。您的任务是优化下方由自动语音识别（ASR）生成的原始会议记录文本。请严格按照以下要求操作，以生成一份流畅、准确、易读的精校版中文文稿。
+        base_prompt = f"""您是一位专业的速记稿后期处理专家。您的任务是优化下方由自动语音识别（ASR）生成的原始会议记录文本。请严格按照以下要求操作，以生成一份流畅、准确、易读的精校版中文文稿。
 
 **处理要求：**
 1.  **润色和修正**：修正文本中的错别字、语法错误，并确保语句通顺、表达准确。
@@ -239,14 +292,23 @@ class OpenAIProvider(LLMEngine):
 3.  **去除冗余**：删除对话中的无意义口头禅、重复词语和语气词（例如："嗯"、"呃"、"那个"、"就是说"等）。
 4.  **合并与分段**：将碎片化句子合并为完整、连贯的句子。根据内容的逻辑关系，将文本合理地划分为段落。
 5.  **保持原意**：必须最大限度地保留原始对话的意图和信息。
-6.  **格式要求**：最终输出结果应为纯净的、连续的中文文本段落。**不要**添加任何标题、说话人标识或任何形式的标记。
-
-{f'这是第 {chunk_num}/{total_chunks} 部分文本。' if total_chunks > 1 else ''}
+6.  **格式要求**：最终输出结果应为纯净的、连续的中文文本段落。**不要**添加任何标题、说话人标识或任何形式的标记。"""
+        
+        # Adjust prompt for emergency mode
+        if emergency:
+            base_prompt += "\n\n**特别注意**：请尽可能简洁地处理，保持核心内容。"
+        
+        chunk_info = f'\n这是第 {chunk_num}/{total_chunks} 部分文本。' if total_chunks > 1 else ''
+        
+        user_prompt = f"""{base_prompt}{chunk_info}
 
 **原始速记稿文本如下：**
 ---
 {chunk}
 ---"""
+        
+        # Adjust token limits for emergency mode
+        max_output_tokens = self.config.max_tokens // 4 if emergency else self.config.max_tokens // 2
         
         response = self._client.chat.completions.create(
             model=self.config.model_name,
@@ -255,13 +317,204 @@ class OpenAIProvider(LLMEngine):
                 {"role": "user", "content": user_prompt}
             ],
             temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens // 2  # Reserve tokens for output
+            max_tokens=max_output_tokens
         )
         
         refined_text = response.choices[0].message.content or ""
         tokens_used = response.usage.total_tokens if response.usage else 0
         
         return refined_text, tokens_used
+    
+    def _estimate_tokens_by_chars(self, text: str) -> int:
+        """Estimate tokens based on text characteristics.
+        
+        This method provides more accurate token estimation than simple
+        character division, taking into account language and content type.
+        """
+        if not text:
+            return 0
+            
+        # Count different types of characters
+        chinese_chars = 0
+        english_words = 0
+        punctuation_count = 0
+        
+        import re
+        
+        # Count Chinese characters (more token-dense)
+        chinese_pattern = r'[\u4e00-\u9fff]'
+        chinese_chars = len(re.findall(chinese_pattern, text))
+        
+        # Count English words (less token-dense)
+        english_pattern = r'\b[a-zA-Z]+\b'
+        english_words = len(re.findall(english_pattern, text))
+        
+        # Count punctuation and special characters
+        punctuation_pattern = r'[^\w\s\u4e00-\u9fff]'
+        punctuation_count = len(re.findall(punctuation_pattern, text))
+        
+        # Estimation formula based on token density patterns:
+        # - Chinese characters: ~1.5 chars per token
+        # - English words: ~1.3 words per token  
+        # - Punctuation: ~2 chars per token
+        
+        chinese_tokens = chinese_chars / 1.5
+        english_tokens = english_words / 1.3
+        punctuation_tokens = punctuation_count / 2.0
+        
+        total_estimated = chinese_tokens + english_tokens + punctuation_tokens
+        
+        # Add 10% buffer for safety
+        return max(1, int(total_estimated * 1.1))
+    
+    def _safe_chunk_text(self, text: str, reserve_tokens: int = 2000) -> List[str]:
+        """Safely chunk text with error handling and fallback strategies.
+        
+        Args:
+            text: Text to chunk
+            reserve_tokens: Tokens to reserve for prompt and output
+            
+        Returns:
+            List[str]: Safely chunked text
+            
+        Raises:
+            ChunkingError: If chunking fails completely
+        """
+        try:
+            # First, try normal chunking
+            max_chunk_tokens = self.config.max_tokens - reserve_tokens
+            chunks = self.chunk_text(text, max_tokens=max_chunk_tokens)
+            
+            # Validate each chunk
+            safe_chunks = []
+            for i, chunk in enumerate(chunks):
+                try:
+                    chunk_tokens = self.count_tokens(chunk)
+                    if chunk_tokens > max_chunk_tokens:
+                        # Split oversized chunk further
+                        sub_chunks = self._emergency_split_chunk(chunk, max_chunk_tokens)
+                        safe_chunks.extend(sub_chunks)
+                    else:
+                        safe_chunks.append(chunk)
+                except (TokenLimitError, TokenizerError) as e:
+                    # Handle token-related errors gracefully
+                    sub_chunks = self._emergency_split_chunk(chunk, max_chunk_tokens // 2)
+                    safe_chunks.extend(sub_chunks)
+            
+            if not safe_chunks:
+                raise ChunkingError(
+                    "All chunks were empty after processing",
+                    text_length=len(text),
+                    max_tokens=max_chunk_tokens
+                )
+            
+            return safe_chunks
+            
+        except (TokenLimitError, TokenizerError, ChunkingError):
+            # Re-raise our custom exceptions
+            raise
+        except Exception as e:
+            # Fallback to character-based chunking for unexpected errors
+            try:
+                char_limit = (self.config.max_tokens - reserve_tokens) * 3  # Conservative estimate
+                fallback_chunks = self._fallback_char_split(text, char_limit)
+                if fallback_chunks:
+                    return fallback_chunks
+            except Exception:
+                pass  # Final fallback below
+            
+            # Final fallback: raise ChunkingError
+            raise ChunkingError(
+                f"Chunking failed completely: {e}",
+                text_length=len(text),
+                max_tokens=self.config.max_tokens - reserve_tokens,
+                details={"original_error": str(e), "error_type": type(e).__name__}
+            )
+    
+    def _emergency_split_chunk(self, chunk: str, max_tokens: Optional[int] = None) -> List[str]:
+        """Emergency splitting for oversized chunks.
+        
+        Args:
+            chunk: Chunk to split
+            max_tokens: Maximum tokens per sub-chunk
+            
+        Returns:
+            List[str]: List of smaller chunks
+        """
+        if max_tokens is None:
+            max_tokens = self.config.max_tokens // 4  # Very conservative
+        
+        # Split by sentences first
+        import re
+        sentences = re.split(r'([.。!?！？]+)', chunk)
+        
+        sub_chunks = []
+        current_sub_chunk = ""
+        
+        for sentence in sentences:
+            if not sentence.strip():
+                continue
+                
+            test_chunk = current_sub_chunk + sentence
+            if self.count_tokens(test_chunk) <= max_tokens:
+                current_sub_chunk = test_chunk
+            else:
+                if current_sub_chunk:
+                    sub_chunks.append(current_sub_chunk)
+                # Handle oversized single sentence
+                if self.count_tokens(sentence) > max_tokens:
+                    # Word-level split as last resort
+                    words = sentence.split()
+                    word_chunk = ""
+                    for word in words:
+                        test_word_chunk = word_chunk + " " + word if word_chunk else word
+                        if self.count_tokens(test_word_chunk) <= max_tokens:
+                            word_chunk = test_word_chunk
+                        else:
+                            if word_chunk:
+                                sub_chunks.append(word_chunk)
+                            word_chunk = word
+                    current_sub_chunk = word_chunk
+                else:
+                    current_sub_chunk = sentence
+        
+        if current_sub_chunk:
+            sub_chunks.append(current_sub_chunk)
+        
+        return sub_chunks if sub_chunks else [chunk[:1000]]  # Final fallback
+    
+    def _fallback_char_split(self, text: str, char_limit: int) -> List[str]:
+        """Fallback character-based splitting when token counting fails.
+        
+        Args:
+            text: Text to split
+            char_limit: Character limit per chunk
+            
+        Returns:
+            List[str]: Character-split chunks
+        """
+        chunks = []
+        start = 0
+        
+        while start < len(text):
+            end = start + char_limit
+            if end >= len(text):
+                chunks.append(text[start:])
+                break
+            
+            # Try to break at sentence boundary
+            boundary_chars = ['。', '.', '!', '?', '！', '？']
+            best_break = end
+            
+            for i in range(end - 100, start, -1):  # Look back up to 100 chars
+                if text[i] in boundary_chars:
+                    best_break = i + 1
+                    break
+            
+            chunks.append(text[start:best_break])
+            start = best_break
+        
+        return chunks
     
     def _summarize_single_chunk(
         self,
@@ -461,4 +714,4 @@ class OpenAIProvider(LLMEngine):
 
 
 # Register the OpenAI provider
-registry.register("openai", OpenAIProvider)
+get_registry().register("openai", OpenAIProvider)

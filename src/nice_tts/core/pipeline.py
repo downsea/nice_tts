@@ -1,7 +1,7 @@
 """Processing pipeline for nice-tts.
 
 This module implements the main processing pipeline that orchestrates
-transcription, refinement, and summarization stages for audio files.
+transcription stage for audio files.
 """
 
 import time
@@ -11,13 +11,15 @@ from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 
+import typer
+
 from .config import AppConfig
 from .exceptions import (
     PipelineError, ProcessingError, FatalError,
     is_retryable_error, get_retry_delay
 )
-from ..engines.transcription.base import registry as transcription_registry
-from ..engines.llm.base import registry as llm_registry
+from ..engines.transcription.base import registry as transcription_registry, TranscriptionEngine
+from ..engines.llm.base import get_registry, LLMEngine
 from ..utils.file_manager import FileManager, ProcessingStage, FileInfo
 from ..utils.logger import Logger, ProgressInfo, ProgressReporter
 
@@ -72,8 +74,8 @@ class ProcessingPipeline:
         self.progress_reporter = ProgressReporter(self.logger)
         
         # Initialize engines
-        self.transcription_engine = None
-        self.llm_engine = None
+        self.transcription_engine: Optional[TranscriptionEngine] = None
+        self.llm_engine: Optional[LLMEngine] = None
         self._setup_engines()
     
     def process_batch(
@@ -122,16 +124,17 @@ class ProcessingPipeline:
             
             total_processing_time = time.time() - start_time
             
-            # Log batch summary
+            # Log batch summary - protect against division by zero
+            total_files = len(audio_files)
             self.logger.log_batch_summary(
                 successful_files,
-                len(audio_files),
+                total_files,
                 total_processing_time
             )
             
             return BatchResult(
                 files_processed=results,
-                total_files=len(audio_files),
+                total_files=total_files,
                 successful_files=successful_files,
                 failed_files=failed_files,
                 total_processing_time=total_processing_time,
@@ -229,12 +232,23 @@ class ProcessingPipeline:
         except Exception as e:
             total_time = time.time() - start_time
             
+            # Enhanced error context with file-specific information
+            error_details = {
+                "file_path": str(file_info.audio_path),
+                "file_name": file_info.audio_path.name,
+                "required_stages": [s.value for s in required_stages],
+                "completed_stages": len(stage_results),
+                "error_type": type(e).__name__,
+                "error_message": str(e)
+            }
+            
             self.logger.log_file_processing(
                 str(file_info.audio_path),
                 "batch",
                 "failed",
                 processing_time=total_time,
-                error=str(e)
+                error=str(e),
+                error_details=error_details
             )
             
             return FileResult(
@@ -255,7 +269,7 @@ class ProcessingPipeline:
             )
             
             # Setup LLM engine
-            self.llm_engine = llm_registry.create_engine(
+            self.llm_engine = get_registry().create_engine(
                 self.config.llm.provider,
                 self.config.llm
             )
@@ -278,9 +292,15 @@ class ProcessingPipeline:
         """Process files sequentially."""
         results = []
         
+        typer.secho(f"📁 Processing Batch: {len(processing_plan)} files", fg=typer.colors.BLUE)
+        typer.secho("───────────────────────────────────────────────────────────────────────────────", fg=typer.colors.BLUE)
+        
         for i, plan_item in enumerate(processing_plan):
             file_info = plan_item["file_info"]
             required_stages = plan_item["required_stages"]
+            
+            # Display file header
+            typer.echo(f"\n[{i+1}/{len(processing_plan)}] 🎵 {file_info.audio_path.name}")
             
             # Skip if no stages needed
             if not required_stages:
@@ -290,6 +310,8 @@ class ProcessingPipeline:
                     "skipped",
                     reason="all_stages_complete"
                 )
+                
+                typer.secho("      ⏭️  Skipped - All stages already complete", fg=typer.colors.YELLOW)
                 
                 result = FileResult(
                     file_info=file_info,
@@ -323,6 +345,25 @@ class ProcessingPipeline:
                 required_stages,
                 file_progress_callback
             )
+            
+            # Display stage results
+            for stage_result in result.stages_completed:
+                if stage_result.success:
+                    typer.secho(f"      ✅ {stage_result.stage.value.capitalize()}: Complete ({stage_result.processing_time:.1f}s)", fg=typer.colors.GREEN)
+                else:
+                    typer.secho(f"      ❌ {stage_result.stage.value.capitalize()}: Failed", fg=typer.colors.RED)
+                    if stage_result.error:
+                        error_msg = str(stage_result.error)
+                        if len(error_msg) > 60:
+                            error_msg = error_msg[:57] + "..."
+                        typer.secho(f"      📝 Error: {error_msg}", fg=typer.colors.RED)
+            
+            # Display output path if successful
+            if result.success and result.stages_completed:
+                last_stage = result.stages_completed[-1]
+                if last_stage.output_path:
+                    typer.echo(f"      📁 Output: {last_stage.output_path}")
+            
             results.append(result)
         
         return results
@@ -336,6 +377,9 @@ class ProcessingPipeline:
         results = []
         completed_files = 0
         
+        typer.secho(f"📁 Processing Batch: {len(processing_plan)} files in parallel", fg=typer.colors.BLUE)
+        typer.secho("───────────────────────────────────────────────────────────────────────────────", fg=typer.colors.BLUE)
+        
         with ThreadPoolExecutor(max_workers=self.config.parallel_jobs) as executor:
             # Submit all jobs
             future_to_plan = {}
@@ -345,6 +389,10 @@ class ProcessingPipeline:
                 required_stages = plan_item["required_stages"]
                 
                 if not required_stages:
+                    # Display file header for skipped files
+                    typer.echo(f"\n🎵 {file_info.audio_path.name}")
+                    typer.secho("      ⏭️  Skipped - All stages already complete", fg=typer.colors.YELLOW)
+                    
                     # Skip files with no work needed
                     result = FileResult(
                         file_info=file_info,
@@ -354,6 +402,10 @@ class ProcessingPipeline:
                     )
                     results.append(result)
                     continue
+                
+                # Display file header for files to be processed
+                typer.echo(f"\n🎵 {file_info.audio_path.name}")
+                typer.secho(f"      ⏳ Queued for processing with {len(required_stages)} stages", fg=typer.colors.CYAN)
                 
                 future = executor.submit(
                     self.process_single_file,
@@ -369,6 +421,27 @@ class ProcessingPipeline:
                     result = future.result()
                     results.append(result)
                     completed_files += 1
+                    
+                    # Display completion status
+                    typer.echo(f"\n🎵 {result.file_info.audio_path.name}")
+                    if result.success:
+                        typer.secho("      ✅ Processing Complete", fg=typer.colors.GREEN)
+                        # Display stage results
+                        for stage_result in result.stages_completed:
+                            typer.secho(f"      ✅ {stage_result.stage.value.capitalize()}: Complete ({stage_result.processing_time:.1f}s)", fg=typer.colors.GREEN)
+                    else:
+                        typer.secho("      ❌ Processing Failed", fg=typer.colors.RED)
+                        if result.error:
+                            error_msg = str(result.error)
+                            if len(error_msg) > 60:
+                                error_msg = error_msg[:57] + "..."
+                            typer.secho(f"      📝 Error: {error_msg}", fg=typer.colors.RED)
+                    
+                    # Display output path if successful
+                    if result.success and result.stages_completed:
+                        last_stage = result.stages_completed[-1]
+                        if last_stage.output_path:
+                            typer.echo(f"      📁 Output: {last_stage.output_path}")
                     
                     # Update overall progress
                     if progress_callback:
@@ -389,6 +462,14 @@ class ProcessingPipeline:
                         file_path=str(file_info.audio_path),
                         error=str(e)
                     )
+                    
+                    # Display error
+                    typer.echo(f"\n🎵 {file_info.audio_path.name}")
+                    typer.secho("      ❌ Processing Failed", fg=typer.colors.RED)
+                    error_msg = str(e)
+                    if len(error_msg) > 60:
+                        error_msg = error_msg[:57] + "..."
+                    typer.secho(f"      📝 Error: {error_msg}", fg=typer.colors.RED)
                     
                     result = FileResult(
                         file_info=file_info,
@@ -428,14 +509,25 @@ class ProcessingPipeline:
             except Exception as e:
                 retry_count += 1
                 
+                # Enhanced error context with stage-specific information
+                error_context = {
+                    "file_path": str(file_info.audio_path),
+                    "file_name": file_info.audio_path.name,
+                    "stage": stage.value,
+                    "retry_count": retry_count,
+                    "max_retries": max_retries
+                }
+                
                 if retry_count > max_retries or not is_retryable_error(e):
                     # Max retries reached or non-retryable error
                     self.logger.error(
-                        f"Stage {stage.value} failed permanently: {e}",
+                        f"Stage {stage.value} failed permanently for {file_info.audio_path.name}: {e}",
                         file_path=str(file_info.audio_path),
                         stage=stage.value,
                         retry_count=retry_count,
-                        error=str(e)
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        error_context=error_context
                     )
                     
                     return StageResult(
@@ -447,12 +539,14 @@ class ProcessingPipeline:
                 # Wait before retry
                 delay = get_retry_delay(e)
                 self.logger.warning(
-                    f"Stage {stage.value} failed, retrying in {delay}s (attempt {retry_count}/{max_retries}): {e}",
+                    f"Stage {stage.value} failed for {file_info.audio_path.name}, retrying in {delay}s (attempt {retry_count}/{max_retries}): {e}",
                     file_path=str(file_info.audio_path),
                     stage=stage.value,
                     retry_count=retry_count,
                     retry_delay=delay,
-                    error=str(e)
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    error_context=error_context
                 )
                 
                 time.sleep(delay)
@@ -461,7 +555,7 @@ class ProcessingPipeline:
         return StageResult(
             stage=stage,
             success=False,
-            error=ProcessingError(f"Max retries exceeded for stage {stage.value}")
+            error=ProcessingError(f"Max retries exceeded for stage {stage.value} on file {file_info.audio_path.name}")
         )
     
     def _process_stage(self, file_info: FileInfo, stage: ProcessingStage) -> StageResult:
@@ -485,10 +579,6 @@ class ProcessingPipeline:
         try:
             if stage == ProcessingStage.TRANSCRIPTION:
                 result = self._process_transcription(file_info)
-            elif stage == ProcessingStage.REFINEMENT:
-                result = self._process_refinement(file_info)
-            elif stage == ProcessingStage.SUMMARIZATION:
-                result = self._process_summarization(file_info)
             else:
                 raise ProcessingError(f"Unknown processing stage: {stage}")
             
@@ -508,12 +598,33 @@ class ProcessingPipeline:
         except Exception as e:
             processing_time = time.time() - start_time
             
+            # Enhanced error reporting with detailed context
+            error_details = {
+                "file_path": str(file_info.audio_path),
+                "file_name": file_info.audio_path.name,
+                "stage": stage.value,
+                "processing_time": processing_time,
+                "error_type": type(e).__name__,
+                "error_message": str(e)
+            }
+            
+            # Add specific error details based on error type
+            if hasattr(e, 'status_code'):
+                error_details["status_code"] = getattr(e, 'status_code')
+            if hasattr(e, 'response_body'):
+                error_details["response_body"] = getattr(e, 'response_body')
+            if hasattr(e, 'model_name'):
+                error_details["model_name"] = getattr(e, 'model_name')
+            if hasattr(e, 'provider'):
+                error_details["provider"] = getattr(e, 'provider')
+            
             self.logger.log_file_processing(
                 str(file_info.audio_path),
                 stage.value,
                 "failed",
                 processing_time=processing_time,
-                error=str(e)
+                error=str(e),
+                error_details=error_details
             )
             
             return StageResult(
@@ -525,6 +636,9 @@ class ProcessingPipeline:
     
     def _process_transcription(self, file_info: FileInfo) -> StageResult:
         """Process transcription stage."""
+        if self.transcription_engine is None:
+            raise ProcessingError("Transcription engine not initialized")
+            
         with self.logger.performance_timer(
             "transcription",
             file_path=str(file_info.audio_path),
@@ -540,56 +654,5 @@ class ProcessingPipeline:
                 stage=ProcessingStage.TRANSCRIPTION,
                 success=True,
                 output_path=file_info.transcript_path,
-                metadata=result.metadata
-            )
-    
-    def _process_refinement(self, file_info: FileInfo) -> StageResult:
-        """Process refinement stage."""
-        # Read transcription
-        transcript_text = self.file_manager.read_text_file(file_info.transcript_path)
-        
-        with self.logger.performance_timer(
-            "refinement",
-            file_path=str(file_info.audio_path),
-            provider=self.config.llm.provider
-        ):
-            # Perform refinement
-            result = self.llm_engine.refine_text(transcript_text)
-            
-            # Save refined text
-            self.file_manager.save_text_file(result.refined_text, file_info.refined_path)
-            
-            return StageResult(
-                stage=ProcessingStage.REFINEMENT,
-                success=True,
-                output_path=file_info.refined_path,
-                metadata=result.metadata
-            )
-    
-    def _process_summarization(self, file_info: FileInfo) -> StageResult:
-        """Process summarization stage."""
-        # Read refined text
-        refined_text = self.file_manager.read_text_file(file_info.refined_path)
-        
-        with self.logger.performance_timer(
-            "summarization",
-            file_path=str(file_info.audio_path),
-            provider=self.config.llm.provider
-        ):
-            # Perform summarization
-            result = self.llm_engine.summarize_text(
-                refined_text,
-                audio_path=str(file_info.audio_path),
-                original_txt_path=str(file_info.transcript_path),
-                refined_txt_path=str(file_info.refined_path)
-            )
-            
-            # Save summary
-            self.file_manager.save_text_file(result.summary_markdown, file_info.summary_path)
-            
-            return StageResult(
-                stage=ProcessingStage.SUMMARIZATION,
-                success=True,
-                output_path=file_info.summary_path,
                 metadata=result.metadata
             )

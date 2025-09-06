@@ -147,6 +147,98 @@ class TranscriptionEngine(ABC):
             )
         
         return True
+    
+    def format_transcript_text(self, segments: Optional[List[Dict[str, Any]]], raw_text: str = "") -> str:
+        """Format transcript text for better readability.
+        
+        Args:
+            segments: Whisper segments with timing and text information
+            raw_text: Raw transcript text as fallback
+            
+        Returns:
+            str: Formatted transcript text (each sentence on a new line)
+        """
+        if segments:
+            return self._format_from_segments(segments)
+        elif raw_text:
+            return self._format_from_raw_text(raw_text)
+        else:
+            return ""
+    
+    def _format_from_segments(self, segments: List[Dict[str, Any]]) -> str:
+        """Format text using Whisper segment information.
+        
+        Args:
+            segments: List of Whisper segments
+            
+        Returns:
+            str: Formatted text with each segment on a new line
+        """
+        formatted_lines = []
+        
+        for segment in segments:
+            text = segment.get("text", "").strip()
+            if text:
+                # Clean up the text
+                text = self._clean_segment_text(text)
+                if text:
+                    formatted_lines.append(text)
+        
+        return "\n".join(formatted_lines)
+    
+    def _format_from_raw_text(self, text: str) -> str:
+        """Format text using punctuation-based sentence splitting.
+        
+        Args:
+            text: Raw transcript text
+            
+        Returns:
+            str: Formatted text with sentences on separate lines
+        """
+        import re
+        
+        # Clean up the text first
+        text = text.strip()
+        if not text:
+            return ""
+        
+        # Split by Chinese punctuation marks
+        sentences = re.split(r'([。！？；])', text)
+        
+        formatted_lines = []
+        current_sentence = ""
+        
+        for part in sentences:
+            current_sentence += part
+            # If this part is a punctuation mark, we have a complete sentence
+            if part in ['。', '！', '？', '；']:
+                clean_sentence = current_sentence.strip()
+                if clean_sentence:
+                    formatted_lines.append(clean_sentence)
+                current_sentence = ""
+        
+        # Handle any remaining text
+        if current_sentence.strip():
+            formatted_lines.append(current_sentence.strip())
+        
+        return "\n".join(formatted_lines)
+    
+    def _clean_segment_text(self, text: str) -> str:
+        """Clean up individual segment text.
+        
+        Args:
+            text: Raw segment text
+            
+        Returns:
+            str: Cleaned text
+        """
+        # Remove extra whitespace
+        text = ' '.join(text.split())
+        
+        # Remove leading/trailing whitespace
+        text = text.strip()
+        
+        return text
 
 
 class EngineRegistry:
