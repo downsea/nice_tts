@@ -1,7 +1,7 @@
 [project]
 name = "nice-tts"
-version = "0.1.0"
-description = "A CLI tool to transcribe, refine, and summarize audio files."
+version = "0.2.0"
+description = "A CLI tool to transcribe, refine, and summarize audio files using AI."
 authors = [{ name = "Jules", email = "jules@example.com" }]
 requires-python = ">=3.11"
 dependencies = [
@@ -10,9 +10,22 @@ dependencies = [
     "typer[all]",
     "openai-whisper",
     "torch",
-    "torchvision",
+    "torchvision", 
     "torchaudio",
     "transformers",
+    "pytest>=7.0",
+    "pytest-cov",
+    "pytest-mock",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "pytest-mock",
+    "black",
+    "flake8",
+    "mypy",
 ]
 
 [project.scripts]

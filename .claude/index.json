@@ -1,0 +1,132 @@
+{
+  "timestamp": "2025-09-04T19:59:57Z",
+  "project_name": "nice-tts",
+  "project_root": "D:\\code\\nice_tts",
+  "total_files": 14,
+  "scanned_files": 8,
+  "coverage_percentage": 57.1,
+  "documentation_files": {
+    "root": "CLAUDE.md",
+    "modules": [
+      "src/nice_tts/CLAUDE.md",
+      "src/nice_tts/transcription/CLAUDE.md",
+      "src/nice_tts/llm/CLAUDE.md"
+    ]
+  },
+  "modules": [
+    {
+      "name": "root",
+      "path": "D:\\code\\nice_tts",
+      "type": "project",
+      "language": "python",
+      "entry_point": "src/nice_tts/main.py",
+      "description": "AI-powered transcription and summarization CLI tool",
+      "files_analyzed": [
+        "pyproject.toml",
+        "README.md",
+        ".gitignore",
+        ".env.example"
+      ],
+      "coverage": "complete"
+    },
+    {
+      "name": "nice_tts",
+      "path": "D:\\code\\nice_tts\\src\\nice_tts",
+      "type": "python_package",
+      "language": "python",
+      "entry_point": "main.py",
+      "description": "Core CLI application module",
+      "files_analyzed": [
+        "main.py",
+        "__init__.py"
+      ],
+      "coverage": "complete"
+    },
+    {
+      "name": "transcription",
+      "path": "D:\\code\\nice_tts\\src\\nice_tts\\transcription",
+      "type": "python_module",
+      "language": "python",
+      "entry_point": "transcription.py",
+      "description": "Audio-to-text transcription using Whisper",
+      "files_analyzed": [
+        "transcription.py"
+      ],
+      "coverage": "complete"
+    },
+    {
+      "name": "llm",
+      "path": "D:\\code\\nice_tts\\src\\nice_tts\\llm",
+      "type": "python_module",
+      "language": "python",
+      "entry_point": "llm.py",
+      "description": "LLM integration for text refinement and summarization",
+      "files_analyzed": [
+        "llm.py"
+      ],
+      "coverage": "complete"
+    }
+  ],
+  "file_analysis": {
+    "source_files": {
+      "count": 4,
+      "analyzed": 4,
+      "coverage": "100%"
+    },
+    "config_files": {
+      "count": 2,
+      "analyzed": 2,
+      "coverage": "100%"
+    },
+    "documentation": {
+      "count": 2,
+      "analyzed": 2,
+      "coverage": "100%"
+    },
+    "example_files": {
+      "count": 6,
+      "analyzed": 0,
+      "coverage": "0%"
+    }
+  },
+  "gaps": {
+    "unscanned_files": [
+      "example.wav",
+      "example.srt", 
+      "example.fine.txt",
+      "test_output/example.txt",
+      "out/example.txt",
+      "uv.lock"
+    ],
+    "missing_tests": [
+      "No unit tests found - only manual CLI testing"
+    ],
+    "documentation_gaps": [
+      "Example files not documented (audio samples, outputs)"
+    ]
+  },
+  "ignore_patterns": [
+    "__pycache__/**",
+    "*.pyc",
+    "*.pyo",
+    "*.pyd",
+    ".Python",
+    "env/",
+    "venv/",
+    ".env",
+    ".venv",
+    "dist/",
+    "build/",
+    "*.egg-info/",
+    ".idea/",
+    ".vscode/"
+  ],
+  "next_steps": [
+    "Consider adding unit tests for core functions",
+    "Document example files and their purposes",
+    "Add integration tests for end-to-end workflow",
+    "Consider adding performance benchmarks",
+    "Add documentation for deployment/configuration"
+  ],
+  "truncated": false
+}
