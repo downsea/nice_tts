@@ -22,8 +22,38 @@ Nice-TTS is a powerful, batch-capable command-line tool that leverages AI to tra
 
 ## Installation
 
+### Basic Installation
 1.  **Clone the repository:** `git clone <repository_url> && cd nice-tts`
-2.  **Create environment and install dependencies:** `uv venv && source .venv/bin/activate && uv pip install -e .`
+2.  **Create environment:** `uv venv`
+3.  **Activate environment:** 
+    - Linux/Mac: `source .venv/bin/activate`
+    - Windows: `.venv\Scripts\activate`
+
+### GPU Installation (Recommended)
+
+For optimal performance with GPU acceleration:
+
+```bash
+# Option 1: Use the GPU installation script (Recommended)
+python install-gpu.py
+
+# Option 2: Manual installation
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+uv sync
+```
+
+**Prerequisites for GPU support:**
+- NVIDIA GPU with CUDA compute capability 7.0 or higher
+- NVIDIA CUDA 12.6 drivers installed
+- Sufficient GPU memory (4GB+ recommended for Whisper models)
+
+### CPU-Only Installation
+
+If you don't have a CUDA-compatible GPU:
+
+```bash
+uv sync
+```
 
 ## GPU Support Check
 

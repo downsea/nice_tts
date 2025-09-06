@@ -7,7 +7,7 @@ transcription, refinement, and summarization stages for audio files.
 import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 
@@ -54,7 +54,7 @@ class BatchResult:
     successful_files: int
     failed_files: int
     total_processing_time: float = 0.0
-    errors: List[Exception]
+    errors: List[Exception] = field(default_factory=list)
 
 
 class ProcessingPipeline:

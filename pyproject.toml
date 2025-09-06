@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "openai",
     "python-dotenv",
-    "typer[all]",
+    "typer",
     "openai-whisper",
     "torch",
     "torchvision", 
